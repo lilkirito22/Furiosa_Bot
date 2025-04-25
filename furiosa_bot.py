@@ -154,6 +154,74 @@ async def buscar_proximo_jogo_furia_api() -> str:
         return "😵 Ocorreu um erro inesperado ao processar a lista de jogos."
 
 
+
+async def buscar_lineup_furia_api() -> str:
+    """
+    Busca os detalhes da equipe FURIA na API PandaScore para extrair a line-up ativa.
+    Retorna uma string formatada com a line-up ou uma mensagem de erro.
+    """
+    # Endpoint para buscar detalhes de um time específico de CSGO
+    # Verifique se /csgo/teams/{id} é o correto ou apenas /teams/{id}
+    #endpoint_detalhes_time = f"{PANDASCORE_BASE_URL}/csgo/teams/{FURIA_TEAM_ID}"
+    endpoint_detalhes_time = f"{PANDASCORE_BASE_URL}/teams/{FURIA_TEAM_ID}"
+
+    headers = {
+        "Authorization": f"Bearer {PANDASCORE_API_KEY}",
+        "Accept": "application/json"
+    }
+
+    # Geralmente não são necessários parâmetros para buscar por ID no path
+    params = {}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            logger.info(f"Chamando API PandaScore: {endpoint_detalhes_time}")
+            response = await client.get(endpoint_detalhes_time, headers=headers, params=params)
+            response.raise_for_status() # Verifica erros HTTP
+
+            logger.info(f"Resposta da API recebida: Status {response.status_code}")
+            dados_time = response.json()
+
+            if not dados_time:
+                logger.warning("API não retornou dados para o ID da FURIA.")
+                return "Não foi possível obter os dados da equipe FURIA."
+
+            # Extrai a lista de jogadores
+            jogadores_lista = dados_time.get("players", [])
+
+            if not jogadores_lista:
+                logger.warning("Lista de jogadores vazia ou não encontrada nos dados da FURIA.")
+                return "Não encontrei a lista de jogadores para a FURIA."
+
+            # Filtra apenas jogadores ativos e pega seus nomes
+            lineup_ativa_nomes = []
+            for jogador in jogadores_lista:
+                if jogador.get("active") is True:
+                    nome_jogador = jogador.get("name", "Nome Desconhecido")
+                    lineup_ativa_nomes.append(nome_jogador)
+
+            if not lineup_ativa_nomes:
+                return "Não encontrei jogadores ativos listados para a FURIA."
+
+            # Formata a resposta
+            # Opcional: Adicionar emoji ou formatação HTML
+            resposta_formatada = (
+                f"🐾 **Line-up Ativa da FURIA** 🐾\n\n"
+                f"{' | '.join(lineup_ativa_nomes)}\n\n"
+                f"_(Nota: Pode incluir técnico/outros membros ativos)_"
+            )
+            return resposta_formatada
+
+    except httpx.HTTPStatusError as exc:
+        logger.error(f"Erro HTTP ao buscar detalhes da FURIA ({exc.response.status_code}): {exc.request.url} - Resposta: {exc.response.text}")
+        return "❌ Erro ao buscar informações da line-up na API (HTTP)."
+    except httpx.RequestError as exc:
+        logger.error(f"Erro de Conexão/Requisição ao buscar detalhes da FURIA: {exc.request.url} - {exc}")
+        return "❌ Erro de conexão ao tentar buscar a line-up."
+    except Exception as exc:
+        logger.error(f"Erro inesperado ao processar detalhes da FURIA: {exc}", exc_info=True)
+        return "😵 Ocorreu um erro inesperado ao processar a line-up."
+
 # --- Fim das Funções Auxiliares ---
 
 
@@ -231,12 +299,13 @@ async def proximo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def line_up(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Envia uma mensagem com o line up."""
-    # Aqui você pode adicionar a lógica para obter o line up da Furia
-    # Por enquanto, vamos apenas enviar uma mensagem de exemplo
-    await update.message.reply_text(
-        "O line up da Furia é: fallen, yekindar, kserato, yurih, molodoy."
-    )
+    """Envia uma mensagem com a line up atual buscada da API."""
+    await update.message.reply_text("Buscando a line-up atual da FURIA...") # Feedback
+
+    resultado_lineup = await buscar_lineup_furia_api() # Chama a nova função
+
+    # Envia o resultado formatado (ou a mensagem de erro)
+    await update.message.reply_html(resultado_lineup) # Usar reply_html se tiver formatação HTML
 
 
 async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

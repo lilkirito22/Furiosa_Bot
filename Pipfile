@@ -8,6 +8,8 @@ python-telegram-bot = "*"
 black = "*"
 dotenv = "*"
 python-dotenv = "*"
+httpx = "*"
+pytz = "*"
 
 [dev-packages]
 

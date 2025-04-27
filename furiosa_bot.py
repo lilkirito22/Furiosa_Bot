@@ -2,11 +2,19 @@ import os
 import logging
 import httpx
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from dotenv import load_dotenv
 import datetime
 import pytz
 import asyncio
+from google.cloud import dialogflow_v2 as dialogflow
+import uuid
 
 # Carregue as variáveis do arquivo .env (opcional, veja abaixo)
 load_dotenv()
@@ -21,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Aqui estao as keys devidamente protegidas
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PANDASCORE_API_KEY = os.getenv("PANDASCORE_API_KEY")
+GOOGLE_PROJECT_ID = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 # id da fnatic para testes 3217
 # FURIA_TEAM_ID = 124530
 FURIA_TEAM_ID = 124530
@@ -44,6 +53,50 @@ PANDASCORE_BASE_URL = "https://api.pandascore.co"
 # A chave é o ano (inteiro)
 
 # (Coloque isso antes das suas funções de comando como start, proximo_jogo, etc.)
+
+
+# --- Dialogflow Helper ---
+async def detect_intent_text(
+    project_id: str, session_id: str, text: str, language_code: str = "pt-br"
+) -> str | None:
+    """Envia texto para o Dialogflow e retorna o nome da intenção detectada."""
+
+    # Cria um cliente de sessão usando as credenciais do ambiente
+    # (GOOGLE_APPLICATION_CREDENTIALS)
+    session_client = dialogflow.SessionsAsyncClient()
+    session_path = session_client.session_path(project_id, session_id)
+
+    if not text:
+        return None
+
+    text_input = dialogflow.TextInput(text=text, language_code=language_code)
+    query_input = dialogflow.QueryInput(text=text_input)
+
+    try:
+        logger.debug(f"Enviando para Dialogflow: '{text}' (Sessão: {session_id})")
+        response = await session_client.detect_intent(
+            request={"session": session_path, "query_input": query_input}
+        )
+        intent_name = response.query_result.intent.display_name
+        confidence = response.query_result.intent_detection_confidence
+        logger.info(
+            f"Dialogflow detectou intenção: '{intent_name}' (Confiança: {confidence:.2f})"
+        )
+
+        # Você pode querer retornar apenas se a confiança for alta o suficiente
+        # if confidence > 0.7:
+        #    return intent_name
+        # else:
+        #    return None # Intenção incerta
+
+        return intent_name  # Retorna o nome da intenção (ex: "BuscarJogosHoje")
+
+    except Exception as e:
+        logger.error(f"Erro ao chamar Dialogflow: {e}", exc_info=True)
+        return None
+
+
+# --- Fim Dialogflow Helper ---
 
 # --- Funções Auxiliares para API PandaScore ---
 
@@ -562,6 +615,71 @@ async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
         return []
 
 
+async def obter_e_formatar_jogos_hoje() -> str:
+    """Busca jogos correndo e próximos de hoje e retorna a string formatada."""
+    try:
+        resultados = await asyncio.gather(
+            buscar_jogos_correndo_api(), buscar_jogos_proximos_hoje_api()
+        )
+        jogos_correndo = resultados[0]
+        jogos_proximos = resultados[1]
+
+        if not jogos_correndo and not jogos_proximos:
+            return (
+                "⚫ Não encontrei jogos de CS correndo ou agendados para hoje na API."
+            )
+
+        mensagem_final = f"📅 **Jogos de CS para Hoje ({datetime.date.today().strftime('%d/%m')})** 📅\n"
+        max_jogos_mostrar = 10
+
+        if jogos_correndo:
+            mensagem_final += "\n🔴 **Ao Vivo Agora:**\n"
+            count = 0
+            for jogo in jogos_correndo:
+                # ... (lógica de formatação e limite como antes) ...
+                if count >= max_jogos_mostrar:
+                    mensagem_final += "_... e mais!_\n"
+                    break
+                mensagem_final += format_match_data_geral(jogo) + "\n\n"
+                count += 1
+
+        if jogos_proximos:
+            # ... (lógica de filtro de duplicatas, formatação e limite como antes) ...
+            mensagem_final += "\n⏳ **Agendados para Hoje:**\n"
+            count = 0
+            ids_correndo = {j.get("id") for j in jogos_correndo}
+            jogos_proximos_filtrados = [
+                j for j in jogos_proximos if j.get("id") not in ids_correndo
+            ]
+            for jogo in jogos_proximos_filtrados:
+                if count >= max_jogos_mostrar:
+                    mensagem_final += "_... e mais!_\n"
+                    break
+                mensagem_final += format_match_data_geral(jogo) + "\n\n"
+                count += 1
+
+        mensagem_final = mensagem_final.strip()
+
+        if len(mensagem_final) <= len(
+            f"📅 **Jogos de CS para Hoje ({datetime.date.today().strftime('%d/%m')})** 📅\n"
+        ):
+            return "⚫ Não encontrei jogos relevantes de CS para exibir hoje."
+
+        return mensagem_final
+
+    except Exception as e:
+        logger.error(f"Erro ao obter e formatar jogos de hoje: {e}", exc_info=True)
+        return "❌ Ocorreu um erro ao buscar a agenda geral de hoje."
+
+
+# Atualiza o handler do comando /jogos_hoje para usar a nova função
+async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para o comando /jogos_hoje."""
+    await update.message.reply_text("Verificando a agenda geral de CS para hoje...")
+    resultado_formatado = await obter_e_formatar_jogos_hoje()
+    await update.message.reply_html(resultado_formatado)
+
+
 # --- Fim das Funções Auxiliares ---
 
 
@@ -617,6 +735,44 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     # Opcional: informar o usuário que algo deu errado
     # if update and isinstance(update, Update) and update.message:
     #     await update.message.reply_text("Ocorreu um erro ao processar sua solicitação.")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Processa mensagens de texto normais usando Dialogflow."""
+    message_text = update.message.text
+    user_id = str(update.message.from_user.id)  # Usa o ID do usuário como ID de sessão
+
+    if not GOOGLE_PROJECT_ID:
+        logger.warning("GOOGLE_PROJECT_ID não definido. Ignorando mensagem de texto.")
+        # await update.message.reply_text("Desculpe, não consigo processar linguagem natural agora.")
+        return
+
+    # Detecta a intenção
+    intent_name = await detect_intent_text(GOOGLE_PROJECT_ID, user_id, message_text)
+
+    # Age baseado na intenção
+    if (
+        intent_name == "BuscarJogosHoje"
+    ):  # Use o nome exato da intenção que você criou no Dialogflow
+        await update.message.reply_text(
+            "Entendi que você quer os jogos de hoje! Buscando..."
+        )
+        resultado_formatado = await obter_e_formatar_jogos_hoje()
+        await update.message.reply_html(resultado_formatado)
+    # elif intent_name == "OutraIntencao":
+    #     # Lógica para outra intenção
+    #     pass
+    else:
+        # Se não reconhecer ou for intenção padrão de fallback
+        # Gerar um ID de sessão único pode ajudar o Dialogflow a não misturar contextos
+        # session_id = str(uuid.uuid4())
+        # intent_name = await detect_intent_text(GOOGLE_PROJECT_ID, session_id, message_text)
+        logger.info(
+            f"Intenção não reconhecida ou fallback: '{intent_name}' para texto: '{message_text}'"
+        )
+        # await update.message.reply_text("Desculpe, não entendi o que você quis dizer.")
+        # É melhor não responder nada para não ser muito chato
+        pass
 
 
 async def proximo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -850,6 +1006,9 @@ def main() -> None:
     # ATENÇÃO COM COMANDO STATS
     application.add_handler(CommandHandler("stats", stats_ano))
     application.add_handler(CommandHandler("jogos_hoje", jogos_hoje))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
     # Registra o handler de erro
     application.add_error_handler(error_handler)

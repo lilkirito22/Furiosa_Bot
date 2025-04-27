@@ -10,6 +10,7 @@ dotenv = "*"
 python-dotenv = "*"
 httpx = "*"
 pytz = "*"
+google-cloud-dialogflow = "*"
 
 [dev-packages]
 

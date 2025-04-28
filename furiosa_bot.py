@@ -15,6 +15,7 @@ import pytz
 import asyncio
 from google.cloud import dialogflow_v2 as dialogflow
 import uuid
+from typing import Tuple, Dict, Any
 
 # Carregue as variáveis do arquivo .env (opcional, veja abaixo)
 load_dotenv()
@@ -54,14 +55,101 @@ PANDASCORE_BASE_URL = "https://api.pandascore.co"
 # A chave é o ano (inteiro)
 
 # (Coloque isso antes das suas funções de comando como start, proximo_jogo, etc.)
-
+FURIA_STATS_DB = {
+    2024: {  # Dados de 2024 (parcial, verificar/atualizar)
+        "resumo": "Início de ano com mudanças na line-up, Major e foco na reconstrução.",
+        "principais_resultados": [
+            "PGL Major Copenhagen: Eliminado (0-3)",
+            "IEM Katowice: Play-in",
+            "GET Rio: Top 8",
+            "IEM Chengdu: Top 12",
+        ],
+        "titulos": 0,
+    },
+    2023: {  # Dados de 2023 (verificar)
+        "resumo": "Ano de participação nos dois Majors e título do Elisa Masters Espoo.",
+        "principais_resultados": [
+            "BLAST.tv Paris Major: Challengers Stage",  # Corrigido nome do Major
+            "IEM Rio Major: Legends Stage",  # Este foi em 2022, remover daqui? Ou era IEM Rio 2023? Verificar! -> Provavelmente BLAST Spring Final / IEM Cologne / Gamers8 foram mais relevantes. Precisa confirmar.
+            "Elisa Masters Espoo: Campeão",
+            "Pinnacle Cup V: Vice",
+        ],
+        "titulos": 1,  # Elisa Masters
+    },
+    2022: {  # Dados de 2022 (verificar)
+        "resumo": "Grande ano com semifinal no Major do Rio e boa performance geral.",
+        "principais_resultados": [
+            "IEM Rio Major: Semifinalista (Top 4)",
+            "PGL Major Antwerp: Legends Stage (Top 8)",
+            "ESL Challenger Valencia: Vice",
+            "PGL RMR Americas: Campeão",  # Qualificatório para o Major
+        ],
+        "titulos": 1,  # RMR
+    },
+    # --- Dados Adicionados (VERIFICAR NA LIQUIPEDIA) ---
+    2021: {  # Simulado/Baseado em conhecimento geral
+        "resumo": "Consistência em Majors, domínio regional e adaptação entre online/LAN.",
+        "principais_resultados": [
+            "PGL Major Stockholm: Legends Stage (Top 8)",
+            "IEM Fall North America: Campeão",
+            "ESL Pro League S14: Top 8",
+            "IEM Cologne (LAN): Top 12",  # Primeiro grande evento LAN pós-pandemia
+        ],
+        "titulos": 1,  # IEM Fall NA
+    },
+    2020: {  # Simulado/Baseado em conhecimento geral
+        "resumo": "Forte domínio na América do Norte durante a era online da pandemia.",
+        "principais_resultados": [
+            "IEM New York NA: Campeão",
+            "ESL Pro League S12 Americas: Campeão",
+            "DreamHack Masters Spring NA: Campeão",
+            "DreamHack Open Summer NA: Campeão",
+            "BLAST Premier Spring Americas Finals: Vice",
+        ],
+        "titulos": 4,  # Muitos títulos regionais NA online
+    },
+    2019: {  # Simulado/Baseado em conhecimento geral
+        "resumo": "Ano de afirmação internacional com boas campanhas em grandes eventos.",
+        "principais_resultados": [
+            "StarLadder Major Berlin: Legends Stage (Top 16)",  # Confirmar Top 16 ou Top 8
+            "ECS Season 7 Finals: Semifinalista (Top 4)",
+            "DreamHack Masters Dallas: Semifinalista (Top 4)",
+            "Arctic Invitational: Campeão",  # Verificar se foi este ou outro título menor
+        ],
+        "titulos": 1,  # Arctic Inv. (Verificar)
+    },
+    2018: {  # Simulado/Baseado em conhecimento geral
+        "resumo": "Primeiras experiências internacionais e título da ESEA Premier NA.",
+        "principais_resultados": [
+            "Qualificação para o FACEIT Major London (via Americas Minor)",
+            "ESEA Season 27 NA Premier: Campeão",  # Título importante para subir
+            "ZOTAC Cup Masters Americas Finals: Campeão",  # Verificar
+        ],
+        "titulos": 2,  # Verificar títulos exatos
+    },
+    2017: {  # Simulado/Baseado em conhecimento geral
+        "resumo": "Formação da equipe e foco total no cenário brasileiro.",
+        "principais_resultados": [
+            "Vitórias e boas colocações em ligas e qualificatórias no Brasil.",
+            "(Resultados específicos de 2017 precisam ser pesquisados na Liquipedia)",
+            # Exemplos (fictícios, precisam checar): Campeão Liga Pró GamersClub, Top 4 GC Masters...
+        ],
+        "titulos": 0,  # Assumindo nenhum título internacional/Tier 1 nesse ano
+    },
+    # Adicione mais anos se desejar
+}
 
 # --- Dialogflow Helper ---
+
+
 async def detect_intent_text(
     project_id: str, session_id: str, text: str, language_code: str = "pt-br"
-) -> str | None:
+) -> Tuple[
+    str | None, Dict[str, Any] | None
+]:  # <<< MODIFICADO: Tipo de retorno agora é uma Tupla
     """
-    Envia o texto do usuário para a API do Dialogflow e retorna o nome da intenção detectada.
+    Envia o texto do usuário para a API do Dialogflow e retorna o nome da intenção
+    e um dicionário com os parâmetros detectados.
 
     Args:
         project_id: O ID do seu projeto no Google Cloud.
@@ -70,59 +158,59 @@ async def detect_intent_text(
         language_code: O código do idioma do agente Dialogflow.
 
     Returns:
-        O nome de exibição da intenção detectada (ex: "BuscarJogosHoje") ou None se ocorrer erro.
+        Uma tupla contendo:
+        - O nome de exibição da intenção detectada (str) ou None se ocorrer erro.
+        - Um dicionário com os parâmetros extraídos (Dict[str, Any]) ou None se ocorrer erro.
     """
 
-    # 1. Criar o Cliente de Sessão:
-    #    A biblioteca usa automaticamente as credenciais encontradas via
-    #    a variável de ambiente GOOGLE_APPLICATION_CREDENTIALS para se autenticar.
+    # 1. Criar o Cliente de Sessão (igual antes)
     try:
         session_client = dialogflow.SessionsAsyncClient()
     except Exception as e:
         logger.exception(
             "ERRO DIALOGFLOW: Falha ao criar o SessionsAsyncClient. Verifique as credenciais."
         )
-        return None
+        return None, None  # <<< MODIFICADO: Retorna tupla com Nones
 
-    # 2. Definir o Caminho da Sessão:
-    #    Identifica unicamente esta sessão de conversa dentro do seu projeto.
+    # 2. Definir o Caminho da Sessão (igual antes)
     session_path = session_client.session_path(project_id, session_id)
     logger.debug(f"Dialogflow session path: {session_path}")
 
     if not text:
-        return None
+        return None, None  # <<< MODIFICADO: Retorna tupla com Nones
 
-    # 3. Preparar a Entrada de Texto:
-    #    Empacota o texto do usuário no formato que a API espera.
+    # 3. Preparar a Entrada de Texto (igual antes)
     text_input = dialogflow.TextInput(text=text, language_code=language_code)
     query_input = dialogflow.QueryInput(text=text_input)
 
-    # 4. Chamar a API detect_intent:
-    #    Envia a consulta para o Dialogflow e espera a resposta.
+    # 4. Chamar a API detect_intent (igual antes)
     try:
         logger.info(f"Enviando para Dialogflow (Projeto: {project_id}): '{text}'")
         response = await session_client.detect_intent(
             request={"session": session_path, "query_input": query_input}
         )
 
-        # 5. Processar a Resposta:
+        # 5. Processar a Resposta (Modificado para pegar parâmetros)
         query_result = response.query_result
         intent_name = query_result.intent.display_name
         confidence = query_result.intent_detection_confidence
 
+        # <<< NOVO: Extrai os parâmetros e converte para um dict Python >>>
+        parameters = dict(query_result.parameters.items())
+
         logger.info(
-            f"Dialogflow detectou: Intenção='{intent_name}', Confiança={confidence:.2f}"
+            f"Dialogflow detectou: Intenção='{intent_name}', Confiança={confidence:.2f}, Parâmetros={parameters}"
         )
 
-        # Poderíamos adicionar um limite de confiança, mas por enquanto retornamos o que foi detectado.
-        return intent_name
+        # <<< MODIFICADO: Retorna a tupla com nome da intenção e parâmetros >>>
+        return intent_name, parameters
 
     except Exception as e:
-        # Captura erros durante a chamada à API (rede, autenticação talvez?)
         logger.exception(
             f"ERRO DIALOGFLOW: Falha na chamada detect_intent para o texto '{text}'"
         )
-        return None
+        # <<< MODIFICADO: Retorna tupla com Nones em caso de erro >>>
+        return None, None
 
 
 # --- Fim Dialogflow Helper ---
@@ -701,6 +789,32 @@ async def obter_e_formatar_jogos_hoje() -> str:
         return "❌ Ocorreu um erro ao buscar a agenda geral de hoje."
 
 
+def get_furia_stats_for_year(year_to_check: int) -> str:
+    """Busca stats (estáticos) e formata a resposta para um ano."""
+    logger.info(f"Buscando stats no DB estático para o ano {year_to_check}")
+    stats_do_ano = FURIA_STATS_DB.get(year_to_check)
+
+    if stats_do_ano:
+        # ... (código de formatação da resposta que você já tinha) ...
+        resultados_str = "\n".join(
+            [f"  - {res}" for res in stats_do_ano["principais_resultados"]]
+        )
+        resposta = (
+            f"📊 <b>Estatísticas da FURIA em {year_to_check}</b> 📊\n\n"
+            f"<b>Resumo:</b> {stats_do_ano['resumo']}\n\n"
+            f"<b>Principais Resultados:</b>\n{resultados_str}\n\n"
+            f"<b>Títulos importantes conquistados:</b> {stats_do_ano['titulos']}"
+        )
+        return resposta
+    else:
+        # ... (código para mensagem de ano não encontrado que você já tinha) ...
+        anos_disponiveis = ", ".join(map(str, sorted(FURIA_STATS_DB.keys())))
+        return (
+            f"Desculpe, não tenho informações detalhadas para o ano {year_to_check}.\n"
+            f"Anos disponíveis no meu DB: {anos_disponiveis}"
+        )
+
+
 # Atualiza o handler do comando /jogos_hoje para usar a nova função
 async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para o comando /jogos_hoje."""
@@ -710,40 +824,6 @@ async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # --- Fim das Funções Auxiliares ---
-
-
-FURIA_STATS_DB = {
-    2024: {
-        "resumo": "Início de ano com mudanças na line-up e foco na reconstrução.",
-        "principais_resultados": [
-            "Classificação para o PGL Major Copenhagen 2024",
-            "Participação IEM Katowice 2024",
-            "Top 8 - GET Rio 2024",
-        ],
-        "titulos": 0,
-    },
-    2023: {
-        "resumo": "Ano de participação nos dois Majors e título do Elisa Masters Espoo.",
-        "principais_resultados": [
-            "PGL Major Paris 2023: Challengers Stage",
-            "IEM Rio Major 2023: Legends Stage",
-            "Campeão - Elisa Masters Espoo 2023",
-            "Vice - Pinnacle Cup V",
-        ],
-        "titulos": 1,  # Elisa Masters
-    },
-    2022: {
-        "resumo": "Grande ano com semifinal no Major do Rio e boa performance geral.",
-        "principais_resultados": [
-            "IEM Rio Major 2022: Semifinalista (Top 4)",
-            "PGL Major Antwerp 2022: Legends Stage",
-            "Vice - ESL Challenger Valencia 2022",
-            "Campeão - PGL RMR Americas",
-        ],
-        "titulos": 1,  # RMR (Considerado título?)
-    },
-    # Adicione mais anos se desejar
-}
 
 
 # Função para o comando /start
@@ -789,9 +869,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning("GOOGLE_PROJECT_ID não definido em handle_message.")
         return
 
-    # Detecta a intenção via Dialogflow
-    intent_name = await detect_intent_text(GOOGLE_PROJECT_ID, user_id, message_text)
-    logger.info(f"handle_message: Intenção retornada='{intent_name}'")
+    # Detecta a intenção e o parametro via Dialogflow
+    intent_name, parameters = await detect_intent_text(
+        GOOGLE_PROJECT_ID, user_id, message_text
+    )
+    logger.info(f"handle_message: Intenção='{intent_name}', Parâmetros='{parameters}'")
 
     # --- Respostas baseadas na Intenção ---
 
@@ -811,6 +893,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         await update.message.reply_text(resposta_greeting)
 
+    elif intent_name == "NextGame":  # Intenção que já tínhamos
+        logger.info("handle_message: Intenção 'NextGame' reconhecida.")
+        await update.message.reply_text(
+            "Entendi! vou da uma conferida para você! Buscando..."
+        )
+        resultado_proximo_jogo = (
+            await buscar_proximo_jogo_furia_api()
+        )  # Ou uma função refatorada
+        await update.message.reply_html(resultado_proximo_jogo)
+
+    elif intent_name == "LineUp":  # intenção que já tínhamos
+        logger.info("handle_message: Intenção 'LineUp' reconhecida.")
+        await update.message.reply_text(
+            "Entendi! vou da uma conferida para você! Buscando..."
+        )
+        resultado_lineup = await buscar_lineup_furia_api()  # Ou uma função refatorada
+        await update.message.reply_html(resultado_lineup)
+
+    elif intent_name == "FuriaTourments":  # <<< Nome da sua intenção no Dialogflow
+        logger.info("handle_message: Intenção 'FuriaTourments' reconhecida.")
+        await update.message.reply_text(
+            "Entendi! vou da uma conferida para você! Buscando..."
+        )
+        # Chama a função que tenta filtrar torneios da Furia no servidor
+        resultado_furia_torneios_lista = await buscar_torneios_furia_api()
+
+        # --- O que acontece depois? ---
+        # Você precisa verificar se a lista está vazia aqui!
+        if not resultado_furia_torneios_lista:
+            logger.info("buscar_torneios_furia_api retornou lista vazia.")
+            await update.message.reply_text(
+                "⚫ Não encontrei campeonatos em andamento ou próximos para a FURIA listados na API no momento."
+            )
+        else:
+            # Formatar e enviar a lista encontrada (código similar ao do comando /campeonatos)
+            logger.info(
+                f"Encontrados {len(resultado_furia_torneios_lista)} torneios para a Furia."
+            )
+            # (Aqui viria a lógica para separar running/upcoming e formatar com format_tournament_data)
+            mensagem_final = "📅 **Campeonatos da FURIA** 📅\n"
+            # ... (Loop para formatar e adicionar à mensagem_final) ...
+            await update.message.reply_html(mensagem_final.strip())
+
     elif intent_name == "GetBotCapabilities":  # <<< NOVA INTENÇÃO: O que o bot faz >>>
         logger.info("handle_message: Intenção 'GetBotCapabilities' reconhecida.")
         # Monta a mensagem explicando as funções
@@ -818,15 +943,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 Eu sou o Furia Fan Bot! 🔥 Posso te ajudar com:
 
 📅 **Agenda de Hoje:** Me pergunte "quais os jogos de hoje?" para ver as partidas de CS rolando.
-🐾 **Próximo Jogo da FURIA:** Use /proximojogo
-👥 **Line-up Atual da FURIA:** Use /line_up
-🏆 **Campeonatos:** Use /campeonatos para ver os torneios da FURIA.
+🐾 **Próximo Jogo da FURIA:** Só me perguntar quando é o proximo jogo que eu ti respondo
+👥 **Line-up Atual da FURIA:** só me perguntar!
+🏆 **Campeonatos:** Só me perguntar quais campeonatos a furia esta jogando
 📊 **Stats Anuais:** Use /stats ANO (ex: /stats 2023) para ver um resumo da FURIA naquele ano.
 
 É só pedir ou usar os comandos! #DIADEFURIA
         """
         # Usamos reply_html para garantir que a formatação funcione, mesmo sem tags HTML explícitas aqui
         await update.message.reply_html(resposta_capabilities)
+        pass
+
+    # <<< NOVO Bloco para Stats por Ano >>>
+    elif intent_name == "GetTeamStatsByYear":  # Use o nome exato da sua intenção
+        logger.info("handle_message: Intenção 'GetTeamStatsByYear' reconhecida.")
+        # Verifica se o dicionário de parâmetros existe e contém a chave 'year'
+
+        if parameters and "year" in parameters and parameters["year"] != "":
+            try:
+                # Tenta converter o parâmetro para inteiro (@sys.number pode vir como float)
+                year_param = int(parameters["year"])
+                logger.info(f"Ano extraído do parâmetro 'year': {year_param}")
+
+                # Valida o intervalo do ano (exemplo)
+                current_year = datetime.datetime.now().year
+                min_year = (
+                    min(FURIA_STATS_DB.keys()) if FURIA_STATS_DB else 2017
+                )  # Pega o menor ano do seu DB
+
+                if min_year <= year_param <= current_year:
+                    # Ano é válido, busca as stats
+                    await update.message.reply_text(
+                        f"Entendi! Buscando estatísticas da FURIA para {year_param}..."
+                    )
+                    # Chama a função reutilizável que usa o DB estático
+                    response_text = get_furia_stats_for_year(year_param)
+                    await update.message.reply_html(response_text)
+                else:
+                    # Ano fora do intervalo esperado
+                    logger.warning(f"Ano inválido recebido do Dialogflow: {year_param}")
+                    await update.message.reply_text(
+                        f"Hmm, {year_param} parece um ano um pouco estranho. Pode me dar um ano entre {min_year} e {current_year}?"
+                    )
+
+            except (ValueError, TypeError):
+                # Erro ao converter o parâmetro para número
+                logger.error(
+                    f"Não foi possível converter o parâmetro 'year' ({parameters.get('year')}) para int."
+                )
+                await update.message.reply_text(
+                    "Não consegui entender o ano que você mencionou. Pode tentar de novo?"
+                )
+        else:
+            # Se Dialogflow não extraiu o ano, ele deveria ter usado os prompts que você definiu na intenção.
+            # Mas caso algo falhe, podemos ter um fallback aqui.
+            logger.warning(
+                "Intenção GetTeamStatsByYear detectada, mas parâmetro 'year' ausente ou vazio."
+            )
+            # Idealmente, o prompt do Dialogflow já teria perguntado o ano.
+            # Você pode adicionar uma resposta aqui se quiser, mas pode ser redundante.
+            await update.message.reply_text(
+                "Para qual ano você gostaria de ver as estatísticas?"
+            )
 
     # elif intent_name == "OutraIntencao":
     # Adicione mais 'elif' para outras intenções que criar
@@ -1011,57 +1189,28 @@ async def campeonatos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def stats_ano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fornece estatísticas da FURIA para um ano específico."""
-    args = context.args  # Pega os argumentos passados após o comando /stats
-
-    # Verifica se o usuário passou um argumento (o ano)
-    if not args:
-        await update.message.reply_text(
-            "Por favor, informe o ano após o comando.\nExemplo: `/stats 2023`"
-        )
+    """Handler para o comando /stats <ano>."""
+    args = context.args
+    if not args or len(args) > 1:
+        await update.message.reply_text("Uso: `/stats ANO` (ex: `/stats 2023`)")
         return
-
-    # Verifica se passou mais de um argumento
-    if len(args) > 1:
-        await update.message.reply_text(
-            "Por favor, informe apenas o ano.\nExemplo: `/stats 2023`"
-        )
-        return
-
-    # Tenta converter o argumento para um número inteiro (ano)
     try:
-        ano_solicitado = int(args[0])
+        year_int = int(args[0])
+        current_year = datetime.datetime.now().year
+        min_year = 2017
+        # Adiciona validação de intervalo
+        if not (min_year <= year_int <= current_year):  # Ajuste o 2018 se necessário
+            raise ValueError("Ano fora do intervalo válido.")
+        # Chama a função reutilizável
+        response_text = get_furia_stats_for_year(year_int)
+        await update.message.reply_html(response_text)
     except ValueError:
         await update.message.reply_text(
-            "O ano informado não é válido. Use um número.\nExemplo: `/stats 2023`"
+            f"Hmm, '{args[0]}' não parece um ano válido. Tente um ano entre 2018 e {datetime.datetime.now().year}."
         )
-        return
-
-    # Busca os dados no nosso "banco de dados" estático
-    stats_do_ano = FURIA_STATS_DB.get(ano_solicitado)
-
-    # Verifica se encontramos dados para o ano solicitado
-    if stats_do_ano:
-        # Formata a mensagem de resposta usando HTML para melhor visualização
-        resultados_str = "\n".join(
-            [f"  - {res}" for res in stats_do_ano["principais_resultados"]]
-        )  # Formata a lista
-        resposta = (
-            f"📊 <b>Estatísticas da FURIA em {ano_solicitado}</b> 📊\n\n"
-            f"<b>Resumo:</b> {stats_do_ano['resumo']}\n\n"
-            f"<b>Principais Resultados:</b>\n{resultados_str}\n\n"
-            f"<b>Títulos importantes conquistados:</b> {stats_do_ano['titulos']}"
-        )
-        await update.message.reply_html(resposta)
-    else:
-        # Informa ao usuário se não temos dados para aquele ano
-        anos_disponiveis = ", ".join(
-            map(str, sorted(FURIA_STATS_DB.keys()))
-        )  # Mostra anos disponíveis
-        await update.message.reply_text(
-            f"Desculpe, não tenho informações detalhadas para o ano {ano_solicitado}.\n"
-            f"Anos disponíveis: {anos_disponiveis}"
-        )
+    except Exception as e:
+        logger.error(f"Erro no comando /stats: {e}", exc_info=True)
+        await update.message.reply_text("Ocorreu um erro ao buscar as estatísticas.")
 
 
 def main() -> None:

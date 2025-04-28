@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PANDASCORE_API_KEY = os.getenv("PANDASCORE_API_KEY")
 GOOGLE_PROJECT_ID = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID")
 # id da fnatic para testes 3217
 # FURIA_TEAM_ID = 124530
 FURIA_TEAM_ID = 124530
@@ -59,40 +60,68 @@ PANDASCORE_BASE_URL = "https://api.pandascore.co"
 async def detect_intent_text(
     project_id: str, session_id: str, text: str, language_code: str = "pt-br"
 ) -> str | None:
-    """Envia texto para o Dialogflow e retorna o nome da intenção detectada."""
+    """
+    Envia o texto do usuário para a API do Dialogflow e retorna o nome da intenção detectada.
 
-    # Cria um cliente de sessão usando as credenciais do ambiente
-    # (GOOGLE_APPLICATION_CREDENTIALS)
-    session_client = dialogflow.SessionsAsyncClient()
+    Args:
+        project_id: O ID do seu projeto no Google Cloud.
+        session_id: Um ID único para esta conversa/usuário (ex: ID do usuário Telegram).
+        text: O texto da mensagem do usuário.
+        language_code: O código do idioma do agente Dialogflow.
+
+    Returns:
+        O nome de exibição da intenção detectada (ex: "BuscarJogosHoje") ou None se ocorrer erro.
+    """
+
+    # 1. Criar o Cliente de Sessão:
+    #    A biblioteca usa automaticamente as credenciais encontradas via
+    #    a variável de ambiente GOOGLE_APPLICATION_CREDENTIALS para se autenticar.
+    try:
+        session_client = dialogflow.SessionsAsyncClient()
+    except Exception as e:
+        logger.exception(
+            "ERRO DIALOGFLOW: Falha ao criar o SessionsAsyncClient. Verifique as credenciais."
+        )
+        return None
+
+    # 2. Definir o Caminho da Sessão:
+    #    Identifica unicamente esta sessão de conversa dentro do seu projeto.
     session_path = session_client.session_path(project_id, session_id)
+    logger.debug(f"Dialogflow session path: {session_path}")
 
     if not text:
         return None
 
+    # 3. Preparar a Entrada de Texto:
+    #    Empacota o texto do usuário no formato que a API espera.
     text_input = dialogflow.TextInput(text=text, language_code=language_code)
     query_input = dialogflow.QueryInput(text=text_input)
 
+    # 4. Chamar a API detect_intent:
+    #    Envia a consulta para o Dialogflow e espera a resposta.
     try:
-        logger.debug(f"Enviando para Dialogflow: '{text}' (Sessão: {session_id})")
+        logger.info(f"Enviando para Dialogflow (Projeto: {project_id}): '{text}'")
         response = await session_client.detect_intent(
             request={"session": session_path, "query_input": query_input}
         )
-        intent_name = response.query_result.intent.display_name
-        confidence = response.query_result.intent_detection_confidence
+
+        # 5. Processar a Resposta:
+        query_result = response.query_result
+        intent_name = query_result.intent.display_name
+        confidence = query_result.intent_detection_confidence
+
         logger.info(
-            f"Dialogflow detectou intenção: '{intent_name}' (Confiança: {confidence:.2f})"
+            f"Dialogflow detectou: Intenção='{intent_name}', Confiança={confidence:.2f}"
         )
 
-        # Você pode querer retornar apenas se a confiança for alta o suficiente
-        # if confidence > 0.7:
-        #    return intent_name
-        # else:
-        #    return None # Intenção incerta
-
-        return intent_name  # Retorna o nome da intenção (ex: "BuscarJogosHoje")
+        # Poderíamos adicionar um limite de confiança, mas por enquanto retornamos o que foi detectado.
+        return intent_name
 
     except Exception as e:
-        logger.error(f"Erro ao chamar Dialogflow: {e}", exc_info=True)
+        # Captura erros durante a chamada à API (rede, autenticação talvez?)
+        logger.exception(
+            f"ERRO DIALOGFLOW: Falha na chamada detect_intent para o texto '{text}'"
+        )
         return None
 
 
@@ -737,42 +766,84 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     #     await update.message.reply_text("Ocorreu um erro ao processar sua solicitação.")
 
 
+# --- Manipulador de Mensagens de Texto ---
+# ... (imports, constantes, outras funções como detect_intent_text, etc.) ...
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Processa mensagens de texto normais usando Dialogflow."""
+    """
+    Processa mensagens de texto que NÃO são comandos.
+    Envia o texto para o Dialogflow para detectar a intenção e responde adequadamente.
+    """
     message_text = update.message.text
-    user_id = str(update.message.from_user.id)  # Usa o ID do usuário como ID de sessão
+    user_id = str(update.message.from_user.id)
+    user_first_name = (
+        update.effective_user.first_name
+    )  # Pega o primeiro nome do usuário
+
+    logger.info(
+        f"handle_message: Recebido texto='{message_text}' do user={user_first_name} (id={user_id})"
+    )
 
     if not GOOGLE_PROJECT_ID:
-        logger.warning("GOOGLE_PROJECT_ID não definido. Ignorando mensagem de texto.")
-        # await update.message.reply_text("Desculpe, não consigo processar linguagem natural agora.")
+        logger.warning("GOOGLE_PROJECT_ID não definido em handle_message.")
         return
 
-    # Detecta a intenção
+    # Detecta a intenção via Dialogflow
     intent_name = await detect_intent_text(GOOGLE_PROJECT_ID, user_id, message_text)
+    logger.info(f"handle_message: Intenção retornada='{intent_name}'")
 
-    # Age baseado na intenção
-    if (
-        intent_name == "BuscarJogosHoje"
-    ):  # Use o nome exato da intenção que você criou no Dialogflow
+    # --- Respostas baseadas na Intenção ---
+
+    if intent_name == "BuscarJogosHoje":  # Intenção que já tínhamos
+        logger.info("handle_message: Intenção 'BuscarJogosHoje' reconhecida.")
         await update.message.reply_text(
             "Entendi que você quer os jogos de hoje! Buscando..."
         )
         resultado_formatado = await obter_e_formatar_jogos_hoje()
         await update.message.reply_html(resultado_formatado)
-    # elif intent_name == "OutraIntencao":
-    #     # Lógica para outra intenção
-    #     pass
-    else:
-        # Se não reconhecer ou for intenção padrão de fallback
-        # Gerar um ID de sessão único pode ajudar o Dialogflow a não misturar contextos
-        # session_id = str(uuid.uuid4())
-        # intent_name = await detect_intent_text(GOOGLE_PROJECT_ID, session_id, message_text)
-        logger.info(
-            f"Intenção não reconhecida ou fallback: '{intent_name}' para texto: '{message_text}'"
+
+    elif intent_name == "Greeting":  # <<< NOVA INTENÇÃO: Cumprimento >>>
+        logger.info("handle_message: Intenção 'Greeting' reconhecida.")
+        # Responde de forma personalizada usando o nome do usuário
+        resposta_greeting = (
+            f"Olá, {user_first_name}! 👋 Pronto para saber as novidades da FURIA?"
         )
-        # await update.message.reply_text("Desculpe, não entendi o que você quis dizer.")
-        # É melhor não responder nada para não ser muito chato
-        pass
+        await update.message.reply_text(resposta_greeting)
+
+    elif intent_name == "GetBotCapabilities":  # <<< NOVA INTENÇÃO: O que o bot faz >>>
+        logger.info("handle_message: Intenção 'GetBotCapabilities' reconhecida.")
+        # Monta a mensagem explicando as funções
+        resposta_capabilities = """
+Eu sou o Furia Fan Bot! 🔥 Posso te ajudar com:
+
+📅 **Agenda de Hoje:** Me pergunte "quais os jogos de hoje?" para ver as partidas de CS rolando.
+🐾 **Próximo Jogo da FURIA:** Use /proximojogo
+👥 **Line-up Atual da FURIA:** Use /line_up
+🏆 **Campeonatos:** Use /campeonatos para ver os torneios da FURIA.
+📊 **Stats Anuais:** Use /stats ANO (ex: /stats 2023) para ver um resumo da FURIA naquele ano.
+
+É só pedir ou usar os comandos! #DIADEFURIA
+        """
+        # Usamos reply_html para garantir que a formatação funcione, mesmo sem tags HTML explícitas aqui
+        await update.message.reply_html(resposta_capabilities)
+
+    # elif intent_name == "OutraIntencao":
+    # Adicione mais 'elif' para outras intenções que criar
+    # pass
+
+    else:
+        # Nenhuma intenção conhecida foi detectada
+        logger.info(
+            f"handle_message: Nenhuma ação definida para a intenção '{intent_name}'. Ignorando."
+        )
+        # Opcional: Responder com "Não entendi" apenas se a confiança for muito baixa ou for Fallback Intent
+        # if intent_name == "Default Fallback Intent":
+        #     await update.message.reply_text("Desculpe, não entendi direito. Pode tentar perguntar de outra forma?")
+        pass  # Melhor não responder nada para não ser chato
+
+
+# --- Fim do handle_message ---
 
 
 async def proximo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

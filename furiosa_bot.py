@@ -228,70 +228,49 @@ def get_today_utc_date_str() -> str:
     return today_utc.strftime("%Y-%m-%d")
 
 
-def format_match_data_geral(
-    match_data: dict, fuso_horario_local: str = "America/Fortaleza"
-) -> str:
-    """Formata os dados de uma única partida (geral) para exibição."""
-    nome_jogo = match_data.get("name", "Jogo sem nome")
-    torneio = match_data.get("league", {}).get("name", "Torneio desconhecido")
+def format_match_data_geral(match_data: dict, fuso_horario_local: str = "America/Fortaleza") -> str:
+    """Formata os dados de uma única partida (geral) para exibição - v2."""
+    # Nome dos times (mais robusto se um faltar)
+    opponents = match_data.get("opponents", [])
+    team_names = [o.get("opponent", {}).get("name", "Time ?") for o in opponents]
+    match_title = f"{team_names[0]} vs {team_names[1]}" if len(team_names) == 2 else match_data.get("name", "Jogo Indefinido")
+
+    torneio = match_data.get("league", {}).get("name", "")
+    serie = match_data.get("serie", {}).get("full_name", "")
+    torneio_full = f"{torneio} ({serie})" if serie else torneio # Combina se tiver série
+
     status = match_data.get("status", "desconhecido")
-    data_inicio_str = match_data.get("begin_at")
-    oponentes = match_data.get("opponents", [])
-    results = match_data.get("results", [])  # Para o placar
+    begin_at_str = match_data.get("begin_at") # Usar begin_at para agendados/correndo
+    results = match_data.get("results", [])
 
-    # Extrai nomes dos oponentes
-    time_a_nome = "Time A?"
-    time_b_nome = "Time B?"
-    time_a_id = None
-    time_b_id = None
-    if len(oponentes) >= 1:
-        time_a_data = oponentes[0].get("opponent", {})
-        time_a_nome = time_a_data.get("name", time_a_nome)
-        time_a_id = time_a_data.get("id")
-    if len(oponentes) >= 2:
-        time_b_data = oponentes[1].get("opponent", {})
-        time_b_nome = time_b_data.get("name", time_b_nome)
-        time_b_id = time_b_data.get("id")
-
-    # Formata hora local
-    data_formatada = "Hora indefinida"
-    if data_inicio_str:
+    # Hora Local (Formato HH:MM)
+    hora_formatada = "?"
+    if begin_at_str:
         try:
-            data_inicio_dt_utc = datetime.datetime.fromisoformat(
-                data_inicio_str.replace("Z", "+00:00")
-            )
-            fuso_local = pytz.timezone(fuso_horario_local)
-            data_local = data_inicio_dt_utc.astimezone(fuso_local)
-            data_formatada = data_local.strftime("%H:%M")
-        except Exception as e:
-            logger.error(
-                f"Erro ao formatar data '{data_inicio_str}' para {fuso_horario_local}: {e}"
-            )
-            data_formatada = "Hora?"
+            dt_utc = datetime.datetime.fromisoformat(begin_at_str.replace("Z", "+00:00"))
+            fuso_local_obj = pytz.timezone(fuso_horario_local)
+            dt_local = dt_utc.astimezone(fuso_local_obj)
+            hora_formatada = dt_local.strftime("%H:%M")
+        except Exception:
+            hora_formatada = "?" # Falha silenciosa
 
-    status_emoji = (
-        "⏳"
-        if status == "not_started"
-        else "🔴" if status == "running" else "✅" if status == "finished" else "❓"
-    )
-    status_texto = status.replace("_", " ").capitalize()
+    # Status com Emoji
+    status_emoji = "⏳" if status == "not_started" else "🔴" if status == "running" else "✅" if status == "finished" else "❓"
+    status_texto = status.replace('_', ' ').capitalize()
 
-    # Pega placar - VERIFICAR SE A ORDEM DOS 'results' CORRESPONDE À ORDEM DOS 'opponents'
+    # Placar (se running/finished)
     placar_str = ""
     if (status == "running" or status == "finished") and len(results) == 2:
-        # Assumindo que results[0] é do opponents[0] e results[1] do opponents[1]
-        # A API PODE NÃO GARANTIR ISSO! Precisa testar.
         score_a = results[0].get("score", "?")
         score_b = results[1].get("score", "?")
-        placar_str = f" ({score_a} x {score_b})"
-        # Uma forma mais segura seria verificar o team_id dentro de results, se ele existir lá
-        # Ex: score_a = next((r['score'] for r in results if r.get('team_id') == time_a_id), '?')
+        placar_str = f" <b>({score_a} x {score_b})</b>" # Placar em negrito
 
-    return (
-        f"🆚 **{time_a_nome} vs {time_b_nome}**{placar_str}\n"
-        f"   🕒 {data_formatada} | {status_texto} {status_emoji}\n"
-        f"   🏆 {torneio}"
-    )
+    # Monta a string final por linha
+    linha1 = f"🆚 <b>{match_title}</b>{placar_str}"
+    linha2 = f"   <code>{hora_formatada}</code> | {status_texto} {status_emoji}" # Hora com `code` para monoespaçado
+    linha3 = f"   🏆 <i>{torneio_full}</i>" # Torneio em itálico
+
+    return f"{linha1}\n{linha2}\n{linha3}"
 
 
 def format_tournament_data(
@@ -1205,56 +1184,55 @@ async def obter_e_formatar_campeonatos() -> str:
 
 
 async def obter_e_formatar_jogos_hoje() -> str:
-    """Busca jogos correndo e próximos de hoje e retorna a string formatada."""
+    """Busca jogos correndo e próximos de hoje (GERAL) e retorna a string formatada."""
     try:
+        logger.info("obtendo_e_formatando_jogos_hoje_geral: Iniciando busca...")
         resultados = await asyncio.gather(
-            buscar_jogos_correndo_api(), buscar_jogos_proximos_hoje_api()
+            buscar_jogos_correndo_api(),      # Função que busca jogos gerais running
+            buscar_jogos_proximos_hoje_api() # Função que busca jogos gerais upcoming hoje
         )
         jogos_correndo = resultados[0]
         jogos_proximos = resultados[1]
 
         if not jogos_correndo and not jogos_proximos:
-            return (
-                "⚫ Não encontrei jogos de CS correndo ou agendados para hoje na API."
-            )
+            return "⚫ Não encontrei jogos de CS correndo ou agendados para hoje na API."
 
-        mensagem_final = f"📅 **Jogos de CS para Hoje ({datetime.date.today().strftime('%d/%m')})** 📅\n"
-        max_jogos_mostrar = 10
+        # Monta a mensagem final
+        mensagem_partes = [] # Usaremos uma lista para montar as partes da mensagem
+        today_str = datetime.date.today().strftime('%d/%m/%Y')
+        mensagem_partes.append(f"📅 **Agenda de CS para Hoje ({today_str})** 📅")
+
+        max_jogos_mostrar_por_secao = 7 # Limite por seção (ajuste conforme necessário)
 
         if jogos_correndo:
-            mensagem_final += "\n🔴 **Ao Vivo Agora:**\n"
+            mensagem_partes.append("\n🔴 <b>Ao Vivo Agora:</b>") # Título da seção
             count = 0
             for jogo in jogos_correndo:
-                # ... (lógica de formatação e limite como antes) ...
-                if count >= max_jogos_mostrar:
-                    mensagem_final += "_... e mais!_\n"
+                if count >= max_jogos_mostrar_por_secao:
+                    mensagem_partes.append("\n<i>... e mais jogos ao vivo!</i>")
                     break
-                mensagem_final += format_match_data_geral(jogo) + "\n\n"
+                # Adiciona linha formatada do jogo
+                mensagem_partes.append(format_match_data_geral(jogo))
                 count += 1
 
         if jogos_proximos:
-            # ... (lógica de filtro de duplicatas, formatação e limite como antes) ...
-            mensagem_final += "\n⏳ **Agendados para Hoje:**\n"
-            count = 0
-            ids_correndo = {j.get("id") for j in jogos_correndo}
-            jogos_proximos_filtrados = [
-                j for j in jogos_proximos if j.get("id") not in ids_correndo
-            ]
-            for jogo in jogos_proximos_filtrados:
-                if count >= max_jogos_mostrar:
-                    mensagem_final += "_... e mais!_\n"
-                    break
-                mensagem_final += format_match_data_geral(jogo) + "\n\n"
-                count += 1
+            # Remove duplicatas (jogos que já estão como 'running')
+            ids_correndo = {j.get('id') for j in jogos_correndo}
+            jogos_proximos_filtrados = [j for j in jogos_proximos if j.get('id') not in ids_correndo]
 
-        mensagem_final = mensagem_final.strip()
+            if jogos_proximos_filtrados: # Só adiciona a seção se houver jogos próximos não repetidos
+                mensagem_partes.append("\n⏳ <b>Agendados para Hoje:</b>") # Título da seção
+                count = 0
+                for jogo in jogos_proximos_filtrados:
+                    if count >= max_jogos_mostrar_por_secao:
+                        mensagem_partes.append("\n<i>... e mais jogos agendados!</i>")
+                        break
+                    # Adiciona linha formatada do jogo
+                    mensagem_partes.append(format_match_data_geral(jogo))
+                    count += 1
 
-        if len(mensagem_final) <= len(
-            f"📅 **Jogos de CS para Hoje ({datetime.date.today().strftime('%d/%m')})** 📅\n"
-        ):
-            return "⚫ Não encontrei jogos relevantes de CS para exibir hoje."
-
-        return mensagem_final
+        # Junta todas as partes da mensagem com duas quebras de linha entre os jogos/seções
+        return "\n\n".join(mensagem_partes).strip()
 
     except Exception as e:
         logger.error(f"Erro ao obter e formatar jogos de hoje: {e}", exc_info=True)
@@ -1329,6 +1307,34 @@ Estou sempre aprendendo! #DIADEFURIA 🔥
     """
     return help_text
 
+
+def get_social_links_text() -> str:
+    """Monta e retorna a string HTML formatada com os links sociais da FURIA."""
+
+    # --- IMPORTANTE: Verifique e coloque os links corretos aqui! ---
+    link_twitter = "https://twitter.com/FURIA"  # Exemplo - Confirmar
+    link_instagram = "https://www.instagram.com/furiagg/"  # Exemplo - Confirmar
+    link_twitch_main = "https://www.twitch.tv/furiatv"  # Exemplo - Confirmar
+    link_youtube = "https://www.youtube.com/@FURIAgg"  # Exemplo - Confirmar
+    link_discord = "https://discord.gg/furia"  # Exemplo - Confirmar link de convite
+    link_loja = "https://www.furia.gg//"  # Exemplo - Confirmar
+    link_tiktok = "https://www.tiktok.com/@furiagg"  # Exemplo - Confirmar
+    # --- Fim dos links ---
+
+    social_text = f"""
+🔗 <b>Links Oficiais da FURIA</b> 🔗
+
+<a href="{link_twitter}">🐦 Twitter (X)</a>
+<a href="{link_instagram}">📸 Instagram</a>
+<a href="{link_tiktok}">🎵 TikTok</a>
+<a href="{link_youtube}">🎬 YouTube</a>
+<a href="{link_twitch_main}">📺 Twitch Principal</a>
+<a href="{link_discord}">💬 Discord</a>
+<a href="{link_loja}">🛒 Loja Oficial</a>
+
+Siga a Pantera! 🐾
+    """
+    return social_text
 
 # --- Fim das Funções Auxiliares ---
 
@@ -1460,6 +1466,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Buscando as últimas notícias...")
         resultado = await obter_e_formatar_noticias(num_noticias=5)
         await update.message.reply_html(resultado, disable_web_page_preview=True)
+
+    elif intent_name == "GetSocialLinks": # <<< Use o nome exato da sua intenção Dialogflow
+        logger.info("handle_message: Intenção 'GetSocialLinks' reconhecida.")
+        # Chama a função que gera o texto dos links
+        resposta_texto = get_social_links_text()
+        # Usa o 'update' disponível aqui para enviar a resposta
+        await update.message.reply_html(resposta_texto, disable_web_page_preview=True)
+
 
     # <<< NOVO Bloco para Stats por Ano >>>
     elif intent_name == "GetTeamStatsByYear":  # Use o nome exato da sua intenção
@@ -1647,35 +1661,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def social_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Envia uma mensagem com os links oficiais da FURIA."""
-
-    # --- IMPORTANTE: Verifique e coloque os links corretos aqui! ---
-    link_twitter = "https://twitter.com/FURIA"  # Exemplo - Confirmar
-    link_instagram = "https://www.instagram.com/furiagg/"  # Exemplo - Confirmar
-    link_twitch_main = "https://www.twitch.tv/furiatv"  # Exemplo - Confirmar
-    link_youtube = "https://www.youtube.com/@FURIAgg"  # Exemplo - Confirmar
-    link_discord = "https://discord.gg/furia"  # Exemplo - Confirmar link de convite
-    link_loja = "https://www.furia.gg//"  # Exemplo - Confirmar
-    link_tiktok = "https://www.tiktok.com/@furiagg"  # Exemplo - Confirmar
-    # Adicione outros se relevante (Facebook?)
-    # --- Fim dos links ---
-
-    # Monta a string com formatação HTML para os links
-    social_text = f"""
-🔗 <b>Links Oficiais da FURIA</b> 🔗
-
-<a href="{link_twitter}">🐦 Twitter (X)</a>
-<a href="{link_instagram}">📸 Instagram</a>
-<a href="{link_tiktok}">🎵 TikTok</a>
-<a href="{link_youtube}">🎬 YouTube</a>
-<a href="{link_twitch_main}">📺 Twitch</a>
-<a href="{link_discord}">💬 Discord</a>
-<a href="{link_loja}">🛒 Loja Oficial</a>
-
-Siga a Pantera! 🐾
-    """
-    # Envia a mensagem, desativando o preview das páginas para não poluir
-    await update.message.reply_html(social_text, disable_web_page_preview=True)
+    """Handler para os comandos /social, /links, /redes."""
+    # Obtém o texto da função auxiliar
+    resposta_texto = get_social_links_text()
+    # Envia o texto obtido, desativando preview de links
+    await update.message.reply_html(resposta_texto, disable_web_page_preview=True)
 
 
 async def obter_e_formatar_ultimo_jogo() -> str:

@@ -731,6 +731,145 @@ async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
         logger.error(f"Erro geral ao buscar torneios da Furia: {exc}", exc_info=True)
         return []
 
+async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
+    """
+    Busca torneios 'running' e 'upcoming' GERAIS de CS na API PandaScore.
+    Retorna uma lista combinada de dicionários de torneios.
+    """
+    endpoint_running = f"{PANDASCORE_BASE_URL}/csgo/tournaments/running"
+    endpoint_upcoming = f"{PANDASCORE_BASE_URL}/csgo/tournaments/upcoming"
+    headers = {"Authorization": f"Bearer {PANDASCORE_API_KEY}", "Accept": "application/json"}
+
+    # Parâmetros SEM filtro de time
+    # Ordenar por data é uma opção segura. Ordenar por tier (-tier) pode ser melhor se suportado.
+    params_running = {"page[size]": limit_each, "sort": "-begin_at"}
+    params_upcoming = {"page[size]": limit_each, "sort": "begin_at"}
+
+    lista_combinada = []
+    ids_adicionados = set()
+
+    try:
+        async with httpx.AsyncClient() as client:
+            logger.info("Buscando torneios GERAIS running e upcoming...")
+            responses = await asyncio.gather(
+                client.get(endpoint_running, headers=headers, params=params_running),
+                client.get(endpoint_upcoming, headers=headers, params=params_upcoming),
+                return_exceptions=True
+            )
+
+            # Processa resposta dos 'running'
+            if isinstance(responses[0], httpx.Response) and responses[0].status_code == 200:
+                torneios_running = responses[0].json()
+                for torneio in torneios_running:
+                    if torneio and torneio.get('id') not in ids_adicionados:
+                        torneio['_list_status'] = 'running'
+                        lista_combinada.append(torneio)
+                        ids_adicionados.add(torneio.get('id'))
+                logger.info(f"Encontrados {len(torneios_running)} torneios running (geral).")
+            elif isinstance(responses[0], Exception):
+                 logger.error(f"Erro ao buscar torneios running (geral): {responses[0]}")
+            elif isinstance(responses[0], httpx.Response):
+                 logger.error(f"Erro HTTP {responses[0].status_code} ao buscar torneios running (geral): {responses[0].text}")
+
+            # Processa resposta dos 'upcoming'
+            if isinstance(responses[1], httpx.Response) and responses[1].status_code == 200:
+                torneios_upcoming = responses[1].json()
+                for torneio in torneios_upcoming:
+                    if torneio and torneio.get('id') not in ids_adicionados:
+                        torneio['_list_status'] = 'upcoming'
+                        lista_combinada.append(torneio)
+                        ids_adicionados.add(torneio.get('id'))
+                logger.info(f"Encontrados {len(torneios_upcoming)} torneios upcoming (geral).")
+            elif isinstance(responses[1], Exception):
+                 logger.error(f"Erro ao buscar torneios upcoming (geral): {responses[1]}")
+            elif isinstance(responses[1], httpx.Response):
+                 logger.error(f"Erro HTTP {responses[1].status_code} ao buscar torneios upcoming (geral): {responses[1].text}")
+
+            # Reordena a lista combinada pela data de início para consistência
+            lista_combinada.sort(key=lambda t: t.get('begin_at', ''))
+            return lista_combinada
+
+    except Exception as exc:
+        logger.error(f"Erro geral ao buscar torneios gerais: {exc}", exc_info=True)
+        return []
+
+
+async def obter_e_formatar_campeonatos() -> str:
+    """
+    Busca e formata a lista de campeonatos.
+    Tenta primeiro os da FURIA, se vazio, busca os gerais.
+    Retorna a string HTML formatada para o Telegram ou mensagem de 'não encontrado'.
+    """
+    mensagem_final = ""
+    lista_vazia = True
+    titulo = "" # Título da seção (Furia ou Geral)
+    nota = "" # Nota adicional (ex: fallback para geral)
+
+    try:
+        # 1. Tenta buscar torneios específicos da FURIA
+        logger.info("obtendo_formatando_campeonatos: Tentando buscar torneios da FURIA...")
+        lista_torneios_furia = await buscar_torneios_furia_api(limit_each=15)
+
+        # 2. Verifica se encontrou torneios da FURIA
+        if lista_torneios_furia:
+            logger.info(f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_furia)} torneios da FURIA.")
+            lista_vazia = False
+            titulo = "📅 **Campeonatos da FURIA** 📅"
+            # Formata a lista da Furia
+            torneios_running_fmt = []
+            torneios_upcoming_fmt = []
+            for torneio in lista_torneios_furia:
+                info_formatada = format_tournament_data(torneio) # Usa a função que já tínhamos
+                if torneio.get('_list_status') == 'running':
+                    torneios_running_fmt.append(info_formatada)
+                else:
+                    torneios_upcoming_fmt.append(info_formatada)
+
+            mensagem_final += f"{titulo}\n" # Adiciona título
+            if torneios_running_fmt:
+                mensagem_final += "\n🔴 **Em Andamento:**\n" + "\n\n".join(torneios_running_fmt) + "\n"
+            if torneios_upcoming_fmt:
+                mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(torneios_upcoming_fmt)
+
+        else:
+            # 3. Se não achou da FURIA, busca os gerais (Fallback)
+            logger.info("obtendo_formatando_campeonatos: Não achou da FURIA, buscando gerais...")
+            lista_torneios_gerais = await buscar_torneios_gerais_api(limit_each=10)
+
+            if lista_torneios_gerais:
+                logger.info(f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_gerais)} torneios gerais.")
+                lista_vazia = False
+                titulo = "📅 **Principais Campeonatos de CS** 📅"
+                nota = "\n_(Não encontrei torneios específicos da FURIA no momento)_" # Nota de fallback
+                # Formata a lista geral
+                torneios_running_fmt = []
+                torneios_upcoming_fmt = []
+                for torneio in lista_torneios_gerais:
+                    info_formatada = format_tournament_data(torneio) # Usa a função que já tínhamos
+                    if torneio.get('_list_status') == 'running':
+                        torneios_running_fmt.append(info_formatada)
+                    else:
+                        torneios_upcoming_fmt.append(info_formatada)
+
+                mensagem_final += f"{titulo}{nota}\n" # Adiciona título e nota
+                if torneios_running_fmt:
+                    mensagem_final += "\n🔴 **Em Andamento:**\n" + "\n\n".join(torneios_running_fmt) + "\n"
+                if torneios_upcoming_fmt:
+                    mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(torneios_upcoming_fmt)
+            # else: Se nem geral achou, lista_vazia continua True
+
+        # 4. Retorna a mensagem apropriada
+        if lista_vazia:
+            logger.info("obtendo_formatando_campeonatos: Nenhuma lista retornou resultados.")
+            return "⚫ Não encontrei campeonatos relevantes (nem da FURIA, nem gerais) em andamento ou próximos na API no momento."
+        else:
+            return mensagem_final.strip()
+
+    except Exception as e:
+        logger.error(f"Erro em obter_e_formatar_campeonatos: {e}", exc_info=True)
+        return "❌ Ocorreu um erro ao buscar os campeonatos."
+
+
 
 async def obter_e_formatar_jogos_hoje() -> str:
     """Busca jogos correndo e próximos de hoje e retorna a string formatada."""
@@ -889,7 +1028,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info("handle_message: Intenção 'Greeting' reconhecida.")
         # Responde de forma personalizada usando o nome do usuário
         resposta_greeting = (
-            f"Olá, {user_first_name}! 👋 Pronto para saber as novidades da FURIA?"
+            f"Olá, {user_first_name}! 👋 Pronto para saber as novidades da FURIA? Você pode começar me perguntando oque eu sei fazer para conferir todas minhas funcionalidades!"
         )
         await update.message.reply_text(resposta_greeting)
 
@@ -911,30 +1050,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         resultado_lineup = await buscar_lineup_furia_api()  # Ou uma função refatorada
         await update.message.reply_html(resultado_lineup)
 
-    elif intent_name == "FuriaTourments":  # <<< Nome da sua intenção no Dialogflow
+    elif intent_name == "FuriaTourments": # Use o nome exato da sua intenção
         logger.info("handle_message: Intenção 'FuriaTourments' reconhecida.")
         await update.message.reply_text(
-            "Entendi! vou da uma conferida para você! Buscando..."
+            "Entendi! Vou dar uma conferida nos campeonatos para você! Buscando..."
         )
-        # Chama a função que tenta filtrar torneios da Furia no servidor
-        resultado_furia_torneios_lista = await buscar_torneios_furia_api()
-
-        # --- O que acontece depois? ---
-        # Você precisa verificar se a lista está vazia aqui!
-        if not resultado_furia_torneios_lista:
-            logger.info("buscar_torneios_furia_api retornou lista vazia.")
-            await update.message.reply_text(
-                "⚫ Não encontrei campeonatos em andamento ou próximos para a FURIA listados na API no momento."
-            )
-        else:
-            # Formatar e enviar a lista encontrada (código similar ao do comando /campeonatos)
-            logger.info(
-                f"Encontrados {len(resultado_furia_torneios_lista)} torneios para a Furia."
-            )
-            # (Aqui viria a lógica para separar running/upcoming e formatar com format_tournament_data)
-            mensagem_final = "📅 **Campeonatos da FURIA** 📅\n"
-            # ... (Loop para formatar e adicionar à mensagem_final) ...
-            await update.message.reply_html(mensagem_final.strip())
+        # <<< CHAMA A FUNÇÃO REUTILIZÁVEL >>>
+        resultado_formatado = await obter_e_formatar_campeonatos()
+        await update.message.reply_html(resultado_formatado)
 
     elif intent_name == "GetBotCapabilities":  # <<< NOVA INTENÇÃO: O que o bot faz >>>
         logger.info("handle_message: Intenção 'GetBotCapabilities' reconhecida.")
@@ -946,9 +1069,9 @@ Eu sou o Furia Fan Bot! 🔥 Posso te ajudar com:
 🐾 **Próximo Jogo da FURIA:** Só me perguntar quando é o proximo jogo que eu ti respondo
 👥 **Line-up Atual da FURIA:** só me perguntar!
 🏆 **Campeonatos:** Só me perguntar quais campeonatos a furia esta jogando
-📊 **Stats Anuais:** Use /stats ANO (ex: /stats 2023) para ver um resumo da FURIA naquele ano.
+📊 **Stats Anuais:** Você pode me perguntar as estatisticas da furia em algum ano especifico.
 
-É só pedir ou usar os comandos! #DIADEFURIA
+É só pedir! #DIADEFURIA
         """
         # Usamos reply_html para garantir que a formatação funcione, mesmo sem tags HTML explícitas aqui
         await update.message.reply_html(resposta_capabilities)
@@ -1131,61 +1254,11 @@ async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def campeonatos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Envia uma mensagem com os campeonatos de CS que a FURIA participa (running/upcoming)."""
-    await update.message.reply_text("Buscando campeonatos da FURIA...")
-
-    try:
-        # Chama a função que TENTA filtrar pela FURIA
-        lista_torneios_furia = await buscar_torneios_furia_api(limit_each=15)
-
-        if not lista_torneios_furia:
-            # Se a lista está vazia, pode ser que o filtro deu erro 400 ou que não há torneios mesmo.
-            # Os logs devem indicar se o filtro falhou.
-            await update.message.reply_text(
-                "⚫ Não encontrei campeonatos em andamento ou próximos para a FURIA na API."
-            )
-            return
-
-        # Separa as listas para exibição
-        torneios_running_fmt = []
-        torneios_upcoming_fmt = []
-
-        for torneio in lista_torneios_furia:
-            # Usa a mesma função de formatação de antes
-            info_formatada = format_tournament_data(torneio)
-            if torneio.get("_list_status") == "running":
-                torneios_running_fmt.append(info_formatada)
-            else:
-                torneios_upcoming_fmt.append(info_formatada)
-
-        # Monta a mensagem final
-        mensagem_final = "📅 **Campeonatos da FURIA** 📅\n"
-
-        if torneios_running_fmt:
-            mensagem_final += "\n🔴 **Em Andamento:**\n"
-            mensagem_final += "\n\n".join(torneios_running_fmt)
-            mensagem_final += "\n"
-
-        if torneios_upcoming_fmt:
-            mensagem_final += "\n⏳ **Próximos:**\n"
-            mensagem_final += "\n\n".join(torneios_upcoming_fmt)
-
-        mensagem_final = mensagem_final.strip()
-
-        # Se por acaso as listas ficaram vazias após processar (improvável)
-        if len(mensagem_final) <= len("📅 **Campeonatos da FURIA** 📅\n"):
-            await update.message.reply_text(
-                "⚫ Não encontrei campeonatos em andamento ou próximos para a FURIA."
-            )
-            return
-
-        await update.message.reply_html(mensagem_final)
-
-    except Exception as e:
-        logger.error(f"Erro geral ao executar /campeonatos: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Ocorreu um erro ao buscar os campeonatos da FURIA."
-        )
+    """Handler para o comando /campeonatos."""
+    await update.message.reply_text("Buscando campeonatos...")
+    # Chama a função reutilizável que contém toda a lógica (Furia -> Geral -> Formatação)
+    resultado_formatado = await obter_e_formatar_campeonatos()
+    await update.message.reply_html(resultado_formatado)
 
 
 async def stats_ano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

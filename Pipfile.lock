@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "2b7f431eb5d7d7d6a0714c9b3e545c983cd2cb839959c21e3ec32ccf8d6e376a"
+            "sha256": "13f6005b97f990324818126f4c4c4ec734c054063bd8afcd7a52e46b569a39ba"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -189,6 +189,15 @@
             ],
             "index": "pypi",
             "version": "==0.9.9"
+        },
+        "feedparser": {
+            "hashes": [
+                "sha256:0be7ee7b395572b19ebeb1d6aafb0028dee11169f1c934e0ed67d54992f4ad45",
+                "sha256:c9d0407b64c6f2a065d0ebb292c2b35c01050cc0dc33757461aaabdc4c4184d5"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.6'",
+            "version": "==6.0.11"
         },
         "google-api-core": {
             "extras": [
@@ -436,6 +445,12 @@
             ],
             "markers": "python_version >= '3.6' and python_version < '4'",
             "version": "==4.9.1"
+        },
+        "sgmllib3k": {
+            "hashes": [
+                "sha256:7868fb1c8bfa764c1ac563d3cf369c381d1325d36124933a726f29fcdaa812e9"
+            ],
+            "version": "==1.0.0"
         },
         "sniffio": {
             "hashes": [

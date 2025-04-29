@@ -11,6 +11,7 @@ python-dotenv = "*"
 httpx = "*"
 pytz = "*"
 google-cloud-dialogflow = "*"
+feedparser = "*"
 
 [dev-packages]
 

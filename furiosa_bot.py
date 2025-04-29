@@ -15,7 +15,8 @@ import pytz
 import asyncio
 from google.cloud import dialogflow_v2 as dialogflow
 import uuid
-from typing import Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any
+import feedparser
 
 # Carregue as variáveis do arquivo .env (opcional, veja abaixo)
 load_dotenv()
@@ -51,8 +52,11 @@ if PANDASCORE_API_KEY is None:
 
 PANDASCORE_BASE_URL = "https://api.pandascore.co"
 
-# Dicionário para armazenar estatísticas (por enquanto, estático)
-# A chave é o ano (inteiro)
+RSS_FEEDS = {
+    "HLTV": "https://www.hltv.org/rss/news",
+}
+# Palavras-chave para filtrar notícias da FURIA (case-insensitive)
+FURIA_KEYWORDS = ["furia", "fallen", "kscerato", "yuurih", "guerri"]
 
 # (Coloque isso antes das suas funções de comando como start, proximo_jogo, etc.)
 FURIA_STATS_DB = {
@@ -544,6 +548,290 @@ async def buscar_proximo_jogo_furia_api() -> str:
         return "😵 Ocorreu um erro inesperado ao processar a lista de jogos."
 
 
+async def buscar_ultimo_jogo_furia_api() -> dict | None:
+    """
+    Busca as últimas partidas finalizadas na API PandaScore
+    e retorna o dicionário da partida mais recente encontrada da FURIA.
+    Retorna None se não encontrar ou se ocorrer erro.
+    """
+
+    """_summary_
+    A função para buscar o último jogo (/ultimojogo) consulta os 50 resultados de partidas mais recentes finalizadas globalmente na API PandaScore e filtra pela FURIA. Se o último jogo da FURIA for mais antigo que esses 50 resultados, o bot informará que não o encontrou. Uma melhoria futura seria implementar paginação para buscar mais resultados históricos ou investigar métodos de filtragem mais diretos na API, se disponíveis.
+    Returns:
+        _type_: _description_
+    """
+
+    endpoint_jogos_passados = f"{PANDASCORE_BASE_URL}/csgo/matches/past"
+    headers = {
+        "Authorization": f"Bearer {PANDASCORE_API_KEY}",
+        "Accept": "application/json",
+    }
+
+    # Parâmetros: Ordenar por data de término DESCENDENTE, pegar um lote pequeno
+    # REMOVEMOS filtro de time, faremos no cliente
+    params = {
+        "sort": "-end_at",  # O traço '-' indica ordem descendente (mais recente primeiro)
+        "page[size]": 50,  # Busca os últimos 15 jogos finalizados no geral
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            logger.info(
+                f"Chamando API (Jogos Passados): {endpoint_jogos_passados} com params: {params}"
+            )
+            response = await client.get(
+                endpoint_jogos_passados, headers=headers, params=params
+            )
+            response.raise_for_status()  # Verifica erros HTTP
+
+            lista_jogos_passados = response.json()
+            if not lista_jogos_passados:
+                logger.info("API não retornou nenhum jogo passado recente.")
+                return None
+
+            # Filtra no lado do cliente para achar o primeiro jogo da FURIA na lista
+        logger.info(f"Verificando {len(lista_jogos_passados)} jogos passados...")
+        for jogo in lista_jogos_passados:
+            jogo_id = jogo.get("id")
+            oponentes = jogo.get("opponents", [])
+            # Log para ver os IDs dos oponentes de cada jogo verificado
+            opponent_ids = [o.get("opponent", {}).get("id") for o in oponentes]
+            logger.debug(
+                f"-> Verificando Jogo ID: {jogo_id}, Oponentes IDs: {opponent_ids}"
+            )
+
+            encontrou_furia = False
+            for oponente_info in oponentes:
+                opponent_data = oponente_info.get("opponent", {})
+                opponent_id = opponent_data.get("id")
+                if opponent_id == FURIA_TEAM_ID:
+                    logger.info(
+                        f"!!! FURIA ({FURIA_TEAM_ID}) encontrada no jogo ID {jogo_id} !!!"
+                    )  # Log se achar
+                    encontrou_furia = True
+                    break  # Achou a FURIA neste jogo
+
+            if encontrou_furia:
+                return jogo  # Retorna o dicionário do primeiro jogo encontrado
+
+        # Se o loop terminar sem achar a FURIA no lote buscado
+        logger.warning(
+            f"FURIA ({FURIA_TEAM_ID}) NÃO encontrada nos {len(lista_jogos_passados)} jogos verificados."
+        )
+        return None
+
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            f"Erro HTTP {exc.response.status_code} ao buscar jogos passados: {exc.response.text}"
+        )
+        return None
+    except Exception as exc:
+        logger.error(f"Erro ao buscar/processar jogos passados: {exc}", exc_info=True)
+        return None
+
+
+async def fetch_and_filter_rss(
+    feed_url: str, keywords: List[str]
+) -> List[Dict[str, Any]]:
+    """Busca um feed RSS e filtra entradas por palavras-chave no título."""
+    news_items = []
+    logger.info(f"Buscando e processando feed: {feed_url}")
+    try:
+        # feedparser é síncrono, rodamos em thread para não bloquear o bot
+        feed_data = await asyncio.to_thread(feedparser.parse, feed_url)
+
+        if feed_data.bozo:  # Verifica se houve erro ao parsear o feed
+            logger.warning(
+                f"Erro ao parsear feed (bozo=1): {feed_url} - {feed_data.bozo_exception}"
+            )
+            # Poderia retornar vazio ou tentar mesmo assim
+
+        for entry in feed_data.entries:
+            title = entry.get("title", "").lower()
+            summary = entry.get("summary", "").lower()
+            # Verifica se alguma keyword está no título ou resumo
+            if any(
+                keyword.lower() in title or keyword.lower() in summary
+                for keyword in keywords
+            ):
+                news_item = {
+                    "title": entry.get("title", "Sem Título"),
+                    "link": entry.get("link", "#"),
+                    # Tenta pegar a data de publicação, se disponível
+                    "published": entry.get("published_parsed")
+                    or entry.get("updated_parsed"),
+                    "source": feed_data.feed.get(
+                        "title", feed_url
+                    ),  # Nome do feed ou URL
+                }
+                news_items.append(news_item)
+                # logger.debug(f"Notícia encontrada em {feed_url}: {news_item['title']}")
+
+        logger.info(f"Encontradas {len(news_items)} notícias relevantes em {feed_url}")
+        return news_items
+    except Exception as e:
+        logger.error(f"Erro ao buscar/processar feed {feed_url}: {e}", exc_info=True)
+        return []  # Retorna lista vazia em caso de erro
+
+
+# --- Função para formatar UMA notícia ---
+def format_news_article(article_data: dict) -> str:
+    """Formata uma notícia para exibição no Telegram (sem tags <small>)."""
+    title = article_data.get("title", "Sem Título")
+    link = article_data.get("link", "#")
+    source = article_data.get("source", "")
+    published_time = article_data.get("published")
+
+    date_str = ""
+    if published_time:
+        try:
+            dt_utc = datetime.datetime(*published_time[:6], tzinfo=pytz.utc)
+            fuso_local = pytz.timezone("America/Fortaleza")  # Ou seu fuso preferido
+            dt_local = dt_utc.astimezone(fuso_local)
+            date_str = f" ({dt_local.strftime('%d/%m %H:%M')})"
+        except Exception as e:
+            logger.warning(f"Erro ao formatar data da notícia '{title}': {e}")
+            date_str = ""
+
+    # <<< CORREÇÃO: Removemos as tags <small> >>>
+    return f"📰 <a href='{link}'><b>{title}</b></a>\nFonte: {source}{date_str}"
+
+
+# --- Função Orquestradora: Busca em todos os feeds e formata ---
+async def obter_e_formatar_noticias(num_noticias: int = 5) -> str:
+    """
+    Busca notícias da FURIA em múltiplos feeds RSS, combina, ordena e formata.
+    Retorna a string HTML formatada ou mensagem de 'não encontrado'.
+    """
+    logger.info("obtendo_e_formatando_noticias: Iniciando busca em feeds RSS...")
+    all_news = []
+
+    # Cria tarefas para buscar em cada feed concorrentemente
+    tasks = [fetch_and_filter_rss(url, FURIA_KEYWORDS) for url in RSS_FEEDS.values()]
+    results = await asyncio.gather(*tasks)  # Executa todas as buscas
+
+    # Combina os resultados de todos os feeds
+    for feed_result in results:
+        all_news.extend(feed_result)
+
+    if not all_news:
+        logger.warning("Nenhuma notícia relevante da FURIA encontrada em nenhum feed.")
+        return (
+            "⚫ Não encontrei notícias recentes sobre a FURIA nos feeds configurados."
+        )
+
+    # Remove duplicatas baseadas no link
+    seen_links = set()
+    unique_news = []
+    for item in all_news:
+        if item["link"] not in seen_links:
+            unique_news.append(item)
+            seen_links.add(item["link"])
+
+    # Ordena as notícias pela data de publicação (mais recentes primeiro), se disponível
+    # Coloca itens sem data no final
+    unique_news.sort(
+        key=lambda x: x.get(
+            "published", datetime.datetime(1970, 1, 1, tzinfo=pytz.utc)
+        ),
+        reverse=True,
+    )
+
+    # Pega as N mais recentes
+    latest_news = unique_news[:num_noticias]
+
+    # Formata a mensagem final
+    mensagem_final = "📰 **Últimas Notícias da FURIA** 📰\n"
+    noticias_formatadas = [format_news_article(item) for item in latest_news]
+    mensagem_final += "\n\n".join(noticias_formatadas)  # Separa com linha dupla
+
+    return mensagem_final.strip()
+
+
+def format_last_match_result(
+    match_data: dict, fuso_horario_local: str = "America/Fortaleza"
+) -> str:
+    """Formata os dados de uma única partida finalizada para exibição."""
+    if not match_data:
+        return "Não foi possível obter dados da partida."
+
+    nome_jogo = match_data.get("name", "Jogo sem nome")
+    torneio = match_data.get("league", {}).get("name", "Torneio desconhecido")
+    status = match_data.get("status", "desconhecido")
+    data_fim_str = match_data.get("end_at")  # Usamos a data de término
+    oponentes = match_data.get("opponents", [])
+    results = match_data.get("results", [])
+    winner_id = match_data.get("winner_id")
+
+    # Extrai nomes e placares (Lógica similar à de format_match_data_geral)
+    time_a_nome = "Time A?"
+    time_b_nome = "Time B?"
+    score_a = "?"
+    score_b = "?"
+    adversario_nome = "Adversário?"
+
+    if len(oponentes) >= 2 and len(results) == 2:
+        # Assumindo que a ordem de opponents e results coincide (VERIFICAR API!)
+        team_a_info = oponentes[0].get("opponent", {})
+        team_b_info = oponentes[1].get("opponent", {})
+        score_a_info = results[0]
+        score_b_info = results[1]
+
+        if team_a_info.get("id") == FURIA_TEAM_ID:
+            time_a_nome = "FURIA"
+            time_b_nome = team_b_info.get("name", "Adversário?")
+            adversario_nome = time_b_nome
+            score_a = score_a_info.get("score", "?")
+            score_b = score_b_info.get("score", "?")
+        elif team_b_info.get("id") == FURIA_TEAM_ID:
+            time_a_nome = team_a_info.get("name", "Adversário?")
+            time_b_nome = "FURIA"
+            adversario_nome = time_a_nome
+            score_a = score_a_info.get("score", "?")
+            score_b = score_b_info.get("score", "?")
+        else:
+            # Caso estranho onde a Furia não é um dos 2 oponentes listados?
+            time_a_nome = team_a_info.get("name", "Time A?")
+            time_b_nome = team_b_info.get("name", "Time B?")
+            score_a = score_a_info.get("score", "?")
+            score_b = score_b_info.get("score", "?")
+
+    # Formata data/hora do fim do jogo
+    data_fim_formatada = "Data indefinida"
+    if data_fim_str:
+        try:
+            data_fim_dt_utc = datetime.datetime.fromisoformat(
+                data_fim_str.replace("Z", "+00:00")
+            )
+            fuso_local = pytz.timezone(fuso_horario_local)
+            data_local = data_fim_dt_utc.astimezone(fuso_local)
+            data_fim_formatada = data_local.strftime("%d/%m/%Y às %H:%M")
+        except Exception as e:
+            logger.error(
+                f"Erro ao formatar data de fim '{data_fim_str}' para {fuso_horario_local}: {e}"
+            )
+            data_fim_formatada = "Data?"
+
+    # Define o resultado (Vitória/Derrota/Empate)
+    resultado_str = ""
+    if winner_id == FURIA_TEAM_ID:
+        resultado_str = "✅ **Vitória da FURIA!**"
+    elif winner_id is None and status == "finished":
+        # Pode ser empate ou outro status finalizado sem vencedor claro
+        resultado_str = "🔘 Resultado final"  # Ou "Empate" se aplicável
+    elif winner_id is not None:  # FURIA perdeu
+        resultado_str = "❌ Derrota da FURIA."
+    else:  # Jogo não parece finalizado ou erro
+        resultado_str = f"Status: {status}"
+
+    return (
+        f"{resultado_str}\n\n"
+        f"🆚 {time_a_nome} **{score_a} x {score_b}** {time_b_nome}\n"
+        f"🏆 {torneio}\n"
+        f"🗓️ Finalizado em: {data_fim_formatada} (Horário de Fortaleza)"
+    )
+
+
 async def buscar_lineup_furia_api() -> str:
     """
     Busca os detalhes da equipe FURIA na API PandaScore para extrair a line-up ativa.
@@ -731,6 +1019,7 @@ async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
         logger.error(f"Erro geral ao buscar torneios da Furia: {exc}", exc_info=True)
         return []
 
+
 async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
     """
     Busca torneios 'running' e 'upcoming' GERAIS de CS na API PandaScore.
@@ -738,7 +1027,10 @@ async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
     """
     endpoint_running = f"{PANDASCORE_BASE_URL}/csgo/tournaments/running"
     endpoint_upcoming = f"{PANDASCORE_BASE_URL}/csgo/tournaments/upcoming"
-    headers = {"Authorization": f"Bearer {PANDASCORE_API_KEY}", "Accept": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {PANDASCORE_API_KEY}",
+        "Accept": "application/json",
+    }
 
     # Parâmetros SEM filtro de time
     # Ordenar por data é uma opção segura. Ordenar por tier (-tier) pode ser melhor se suportado.
@@ -754,39 +1046,55 @@ async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
             responses = await asyncio.gather(
                 client.get(endpoint_running, headers=headers, params=params_running),
                 client.get(endpoint_upcoming, headers=headers, params=params_upcoming),
-                return_exceptions=True
+                return_exceptions=True,
             )
 
             # Processa resposta dos 'running'
-            if isinstance(responses[0], httpx.Response) and responses[0].status_code == 200:
+            if (
+                isinstance(responses[0], httpx.Response)
+                and responses[0].status_code == 200
+            ):
                 torneios_running = responses[0].json()
                 for torneio in torneios_running:
-                    if torneio and torneio.get('id') not in ids_adicionados:
-                        torneio['_list_status'] = 'running'
+                    if torneio and torneio.get("id") not in ids_adicionados:
+                        torneio["_list_status"] = "running"
                         lista_combinada.append(torneio)
-                        ids_adicionados.add(torneio.get('id'))
-                logger.info(f"Encontrados {len(torneios_running)} torneios running (geral).")
+                        ids_adicionados.add(torneio.get("id"))
+                logger.info(
+                    f"Encontrados {len(torneios_running)} torneios running (geral)."
+                )
             elif isinstance(responses[0], Exception):
-                 logger.error(f"Erro ao buscar torneios running (geral): {responses[0]}")
+                logger.error(f"Erro ao buscar torneios running (geral): {responses[0]}")
             elif isinstance(responses[0], httpx.Response):
-                 logger.error(f"Erro HTTP {responses[0].status_code} ao buscar torneios running (geral): {responses[0].text}")
+                logger.error(
+                    f"Erro HTTP {responses[0].status_code} ao buscar torneios running (geral): {responses[0].text}"
+                )
 
             # Processa resposta dos 'upcoming'
-            if isinstance(responses[1], httpx.Response) and responses[1].status_code == 200:
+            if (
+                isinstance(responses[1], httpx.Response)
+                and responses[1].status_code == 200
+            ):
                 torneios_upcoming = responses[1].json()
                 for torneio in torneios_upcoming:
-                    if torneio and torneio.get('id') not in ids_adicionados:
-                        torneio['_list_status'] = 'upcoming'
+                    if torneio and torneio.get("id") not in ids_adicionados:
+                        torneio["_list_status"] = "upcoming"
                         lista_combinada.append(torneio)
-                        ids_adicionados.add(torneio.get('id'))
-                logger.info(f"Encontrados {len(torneios_upcoming)} torneios upcoming (geral).")
+                        ids_adicionados.add(torneio.get("id"))
+                logger.info(
+                    f"Encontrados {len(torneios_upcoming)} torneios upcoming (geral)."
+                )
             elif isinstance(responses[1], Exception):
-                 logger.error(f"Erro ao buscar torneios upcoming (geral): {responses[1]}")
+                logger.error(
+                    f"Erro ao buscar torneios upcoming (geral): {responses[1]}"
+                )
             elif isinstance(responses[1], httpx.Response):
-                 logger.error(f"Erro HTTP {responses[1].status_code} ao buscar torneios upcoming (geral): {responses[1].text}")
+                logger.error(
+                    f"Erro HTTP {responses[1].status_code} ao buscar torneios upcoming (geral): {responses[1].text}"
+                )
 
             # Reordena a lista combinada pela data de início para consistência
-            lista_combinada.sort(key=lambda t: t.get('begin_at', ''))
+            lista_combinada.sort(key=lambda t: t.get("begin_at", ""))
             return lista_combinada
 
     except Exception as exc:
@@ -802,65 +1110,91 @@ async def obter_e_formatar_campeonatos() -> str:
     """
     mensagem_final = ""
     lista_vazia = True
-    titulo = "" # Título da seção (Furia ou Geral)
-    nota = "" # Nota adicional (ex: fallback para geral)
+    titulo = ""  # Título da seção (Furia ou Geral)
+    nota = ""  # Nota adicional (ex: fallback para geral)
 
     try:
         # 1. Tenta buscar torneios específicos da FURIA
-        logger.info("obtendo_formatando_campeonatos: Tentando buscar torneios da FURIA...")
+        logger.info(
+            "obtendo_formatando_campeonatos: Tentando buscar torneios da FURIA..."
+        )
         lista_torneios_furia = await buscar_torneios_furia_api(limit_each=15)
 
         # 2. Verifica se encontrou torneios da FURIA
         if lista_torneios_furia:
-            logger.info(f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_furia)} torneios da FURIA.")
+            logger.info(
+                f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_furia)} torneios da FURIA."
+            )
             lista_vazia = False
             titulo = "📅 **Campeonatos da FURIA** 📅"
             # Formata a lista da Furia
             torneios_running_fmt = []
             torneios_upcoming_fmt = []
             for torneio in lista_torneios_furia:
-                info_formatada = format_tournament_data(torneio) # Usa a função que já tínhamos
-                if torneio.get('_list_status') == 'running':
+                info_formatada = format_tournament_data(
+                    torneio
+                )  # Usa a função que já tínhamos
+                if torneio.get("_list_status") == "running":
                     torneios_running_fmt.append(info_formatada)
                 else:
                     torneios_upcoming_fmt.append(info_formatada)
 
-            mensagem_final += f"{titulo}\n" # Adiciona título
+            mensagem_final += f"{titulo}\n"  # Adiciona título
             if torneios_running_fmt:
-                mensagem_final += "\n🔴 **Em Andamento:**\n" + "\n\n".join(torneios_running_fmt) + "\n"
+                mensagem_final += (
+                    "\n🔴 **Em Andamento:**\n"
+                    + "\n\n".join(torneios_running_fmt)
+                    + "\n"
+                )
             if torneios_upcoming_fmt:
-                mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(torneios_upcoming_fmt)
+                mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(
+                    torneios_upcoming_fmt
+                )
 
         else:
             # 3. Se não achou da FURIA, busca os gerais (Fallback)
-            logger.info("obtendo_formatando_campeonatos: Não achou da FURIA, buscando gerais...")
+            logger.info(
+                "obtendo_formatando_campeonatos: Não achou da FURIA, buscando gerais..."
+            )
             lista_torneios_gerais = await buscar_torneios_gerais_api(limit_each=10)
 
             if lista_torneios_gerais:
-                logger.info(f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_gerais)} torneios gerais.")
+                logger.info(
+                    f"obtendo_formatando_campeonatos: Encontrados {len(lista_torneios_gerais)} torneios gerais."
+                )
                 lista_vazia = False
                 titulo = "📅 **Principais Campeonatos de CS** 📅"
-                nota = "\n_(Não encontrei torneios específicos da FURIA no momento)_" # Nota de fallback
+                nota = "\n_(Não encontrei torneios específicos da FURIA no momento)_"  # Nota de fallback
                 # Formata a lista geral
                 torneios_running_fmt = []
                 torneios_upcoming_fmt = []
                 for torneio in lista_torneios_gerais:
-                    info_formatada = format_tournament_data(torneio) # Usa a função que já tínhamos
-                    if torneio.get('_list_status') == 'running':
+                    info_formatada = format_tournament_data(
+                        torneio
+                    )  # Usa a função que já tínhamos
+                    if torneio.get("_list_status") == "running":
                         torneios_running_fmt.append(info_formatada)
                     else:
                         torneios_upcoming_fmt.append(info_formatada)
 
-                mensagem_final += f"{titulo}{nota}\n" # Adiciona título e nota
+                mensagem_final += f"{titulo}{nota}\n"  # Adiciona título e nota
                 if torneios_running_fmt:
-                    mensagem_final += "\n🔴 **Em Andamento:**\n" + "\n\n".join(torneios_running_fmt) + "\n"
+                    mensagem_final += (
+                        "\n🔴 **Em Andamento:**\n"
+                        + "\n\n".join(torneios_running_fmt)
+                        + "\n"
+                    )
                 if torneios_upcoming_fmt:
-                    mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(torneios_upcoming_fmt)
+                    mensagem_final += "\n⏳ **Próximos:**\n" + "\n\n".join(
+                        torneios_upcoming_fmt
+                    )
             # else: Se nem geral achou, lista_vazia continua True
 
         # 4. Retorna a mensagem apropriada
         if lista_vazia:
-            logger.info("obtendo_formatando_campeonatos: Nenhuma lista retornou resultados.")
+            logger.info(
+                "obtendo_formatando_campeonatos: Nenhuma lista retornou resultados."
+            )
             return "⚫ Não encontrei campeonatos relevantes (nem da FURIA, nem gerais) em andamento ou próximos na API no momento."
         else:
             return mensagem_final.strip()
@@ -868,7 +1202,6 @@ async def obter_e_formatar_campeonatos() -> str:
     except Exception as e:
         logger.error(f"Erro em obter_e_formatar_campeonatos: {e}", exc_info=True)
         return "❌ Ocorreu um erro ao buscar os campeonatos."
-
 
 
 async def obter_e_formatar_jogos_hoje() -> str:
@@ -962,6 +1295,41 @@ async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_html(resultado_formatado)
 
 
+# Coloque esta função junto com suas outras funções auxiliares
+
+
+def get_help_text(user_name: str) -> str:
+    """Monta e retorna a string HTML formatada da mensagem de ajuda."""
+    # O texto é o mesmo que definimos antes
+    help_text = f"""
+Olá, {user_name}! 👋 Sou o Furia Fan Bot e posso te ajudar com o seguinte:
+
+<b>Comandos:</b>
+• <code>/proximojogo</code> - Mostra a próxima partida agendada da FURIA.
+• <code>/ultimojogo</code> - Exibe o resultado da última partida finalizada da FURIA.
+• <code>/line_up</code> - Apresenta a line-up ativa atual da FURIA.
+• <code>/campeonatos</code> - Lista os campeonatos que a FURIA participa (em andamento ou próximos).
+• <code>/stats ANO</code> - Mostra estatísticas da FURIA para um ano específico (ex: <code>/stats 2023</code>).
+• <code>/jogos_hoje</code> - Exibe a agenda geral de jogos de CS para hoje.
+• <code>/noticias</code> - Traz as últimas notícias sobre a FURIA.
+• <code>/social</code> - Mostra os links oficiais da FURIA.
+• <code>/help</code> ou <code>/ajuda</code> - Exibe esta mensagem.
+
+<b>Conversa Natural:</b>
+Você também pode me perguntar naturalmente sobre:
+• Próximo jogo ou último resultado.
+• Jogos de hoje.
+• Stats de um ano específico.
+• Notícias da FURIA.
+• Campeonatos da FURIA.
+• O que eu faço ou pedir ajuda.
+• E me dar oi! 😉
+
+Estou sempre aprendendo! #DIADEFURIA 🔥
+    """
+    return help_text
+
+
 # --- Fim das Funções Auxiliares ---
 
 
@@ -974,6 +1342,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Fala, {user.mention_html()}! Bem-vindo ao Furia Fan Bot! 🔥\n"
         f"Use os comandos para saber tudo sobre a Furia. #DIADEFURIA"
     )
+
+
+async def noticias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para o comando /noticias."""
+    await update.message.reply_text("Buscando as últimas notícias da FURIA...")
+    resultado_formatado = await obter_e_formatar_noticias(
+        num_noticias=5
+    )  # Pega as 5 mais recentes
+    await update.message.reply_html(
+        resultado_formatado, disable_web_page_preview=True
+    )  # Desativa preview de link
 
 
 # Função para lidar com erros
@@ -1027,9 +1406,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif intent_name == "Greeting":  # <<< NOVA INTENÇÃO: Cumprimento >>>
         logger.info("handle_message: Intenção 'Greeting' reconhecida.")
         # Responde de forma personalizada usando o nome do usuário
-        resposta_greeting = (
-            f"Olá, {user_first_name}! 👋 Pronto para saber as novidades da FURIA? Você pode começar me perguntando oque eu sei fazer para conferir todas minhas funcionalidades!"
-        )
+        resposta_greeting = f"Olá, {user_first_name}! 👋 Pronto para saber as novidades da FURIA? Você pode começar me perguntando oque eu sei fazer para conferir todas minhas funcionalidades!"
         await update.message.reply_text(resposta_greeting)
 
     elif intent_name == "NextGame":  # Intenção que já tínhamos
@@ -1050,7 +1427,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         resultado_lineup = await buscar_lineup_furia_api()  # Ou uma função refatorada
         await update.message.reply_html(resultado_lineup)
 
-    elif intent_name == "FuriaTourments": # Use o nome exato da sua intenção
+    elif intent_name == "FuriaTourments":  # Use o nome exato da sua intenção
         logger.info("handle_message: Intenção 'FuriaTourments' reconhecida.")
         await update.message.reply_text(
             "Entendi! Vou dar uma conferida nos campeonatos para você! Buscando..."
@@ -1059,23 +1436,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         resultado_formatado = await obter_e_formatar_campeonatos()
         await update.message.reply_html(resultado_formatado)
 
-    elif intent_name == "GetBotCapabilities":  # <<< NOVA INTENÇÃO: O que o bot faz >>>
+    elif intent_name == "GetBotCapabilities":  # Intenção para "o que você faz?"
         logger.info("handle_message: Intenção 'GetBotCapabilities' reconhecida.")
-        # Monta a mensagem explicando as funções
-        resposta_capabilities = """
-Eu sou o Furia Fan Bot! 🔥 Posso te ajudar com:
+        user_first_name = (
+            update.effective_user.first_name
+        )  # Pega o nome do usuário aqui
+        # <<< CORREÇÃO: Chama a função que GERA o texto >>>
+        resposta_texto = get_help_text(user_first_name)
+        # <<< CORREÇÃO: Usa o 'update' do handle_message para ENVIAR o texto >>>
+        await update.message.reply_html(resposta_texto)
 
-📅 **Agenda de Hoje:** Me pergunte "quais os jogos de hoje?" para ver as partidas de CS rolando.
-🐾 **Próximo Jogo da FURIA:** Só me perguntar quando é o proximo jogo que eu ti respondo
-👥 **Line-up Atual da FURIA:** só me perguntar!
-🏆 **Campeonatos:** Só me perguntar quais campeonatos a furia esta jogando
-📊 **Stats Anuais:** Você pode me perguntar as estatisticas da furia em algum ano especifico.
+    elif intent_name == "GetLastMatchResult":  # Use o nome exato da sua intenção
+        logger.info("handle_message: Intenção 'GetLastMatchResult' reconhecida.")
+        await update.message.reply_text(
+            "Entendi, buscando o resultado da última partida da FURIA..."
+        )
+        # Chama a função reutilizável
+        resultado_formatado = await obter_e_formatar_ultimo_jogo()
+        await update.message.reply_html(resultado_formatado)
 
-É só pedir! #DIADEFURIA
-        """
-        # Usamos reply_html para garantir que a formatação funcione, mesmo sem tags HTML explícitas aqui
-        await update.message.reply_html(resposta_capabilities)
-        pass
+    elif intent_name == "GetNews":  # Use o nome exato da sua intenção
+        logger.info("handle_message: Intenção 'GetNews' reconhecida.")
+        await update.message.reply_text("Buscando as últimas notícias...")
+        resultado = await obter_e_formatar_noticias(num_noticias=5)
+        await update.message.reply_html(resultado, disable_web_page_preview=True)
 
     # <<< NOVO Bloco para Stats por Ano >>>
     elif intent_name == "GetTeamStatsByYear":  # Use o nome exato da sua intenção
@@ -1253,6 +1637,77 @@ async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para os comandos /help e /ajuda."""
+    user_name = update.effective_user.first_name
+    # Obtém o texto da função auxiliar
+    resposta_texto = get_help_text(user_name)
+    # Envia o texto obtido
+    await update.message.reply_html(resposta_texto)
+
+
+async def social_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Envia uma mensagem com os links oficiais da FURIA."""
+
+    # --- IMPORTANTE: Verifique e coloque os links corretos aqui! ---
+    link_twitter = "https://twitter.com/FURIA"  # Exemplo - Confirmar
+    link_instagram = "https://www.instagram.com/furiagg/"  # Exemplo - Confirmar
+    link_twitch_main = "https://www.twitch.tv/furiatv"  # Exemplo - Confirmar
+    link_youtube = "https://www.youtube.com/@FURIAgg"  # Exemplo - Confirmar
+    link_discord = "https://discord.gg/furia"  # Exemplo - Confirmar link de convite
+    link_loja = "https://www.furia.gg//"  # Exemplo - Confirmar
+    link_tiktok = "https://www.tiktok.com/@furiagg"  # Exemplo - Confirmar
+    # Adicione outros se relevante (Facebook?)
+    # --- Fim dos links ---
+
+    # Monta a string com formatação HTML para os links
+    social_text = f"""
+🔗 <b>Links Oficiais da FURIA</b> 🔗
+
+<a href="{link_twitter}">🐦 Twitter (X)</a>
+<a href="{link_instagram}">📸 Instagram</a>
+<a href="{link_tiktok}">🎵 TikTok</a>
+<a href="{link_youtube}">🎬 YouTube</a>
+<a href="{link_twitch_main}">📺 Twitch</a>
+<a href="{link_discord}">💬 Discord</a>
+<a href="{link_loja}">🛒 Loja Oficial</a>
+
+Siga a Pantera! 🐾
+    """
+    # Envia a mensagem, desativando o preview das páginas para não poluir
+    await update.message.reply_html(social_text, disable_web_page_preview=True)
+
+
+async def obter_e_formatar_ultimo_jogo() -> str:
+    """
+    Busca o último jogo da FURIA na API, formata o resultado e retorna a string.
+    """
+    logger.info("obtendo_e_formatando_ultimo_jogo: Iniciando busca...")
+    try:
+        # Chama a função que busca na API e filtra no cliente
+        ultimo_jogo_data = await buscar_ultimo_jogo_furia_api()
+
+        if ultimo_jogo_data:
+            # Formata os dados encontrados
+            return format_last_match_result(ultimo_jogo_data)
+        else:
+            # Se não encontrou jogo da Furia no lote buscado
+            return "⚫ Não encontrei informações sobre o último jogo da FURIA nos resultados recentes da API."
+
+    except Exception as e:
+        logger.error(f"Erro em obter_e_formatar_ultimo_jogo: {e}", exc_info=True)
+        return "❌ Desculpe, ocorreu um erro ao buscar informações do último jogo."
+
+
+async def ultimo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para o comando /ultimojogo."""
+    await update.message.reply_text("Buscando resultado do último jogo da FURIA...")
+    resultado_formatado = (
+        await obter_e_formatar_ultimo_jogo()
+    )  # Chama a função reutilizável
+    await update.message.reply_html(resultado_formatado)
+
+
 async def campeonatos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para o comando /campeonatos."""
     await update.message.reply_text("Buscando campeonatos...")
@@ -1302,7 +1757,20 @@ def main() -> None:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
+    application.add_handler(CommandHandler("ultimojogo", ultimo_jogo))
+    application.add_handler(
+        CommandHandler("noticias", noticias)
+    )  # <<< Adicione esta linha
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("ajuda", help_command))  # Alias para /help
 
+    application.add_handler(CommandHandler("social", social_command))
+    application.add_handler(
+        CommandHandler("links", social_command)
+    )  # Alias para /social
+    application.add_handler(
+        CommandHandler("redes", social_command)
+    )  # Alias para /social
     # Registra o handler de erro
     application.add_error_handler(error_handler)
 

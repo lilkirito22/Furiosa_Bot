@@ -1,7 +1,7 @@
 import os
 import logging
 import httpx
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -145,6 +145,27 @@ FURIA_STATS_DB = {
 
 # --- Dialogflow Helper ---
 
+# Mapeamento de códigos de país (ISO 3166-1 alpha-2) para emojis de bandeira
+COUNTRY_FLAGS = {
+    "BR": "🇧🇷",  # Brasil
+    "LV": "🇱🇻",  # Letônia
+    "KZ": "🇰🇿",  # Cazaquistão
+    "UA": "🇺🇦",  # Ucrânia (Exemplo de outro time)
+    "RU": "🇷🇺",  # Rússia (Exemplo)
+    "DK": "🇩🇰",  # Dinamarca (Exemplo)
+    "SE": "🇸🇪",  # Suécia (Exemplo)
+    # Adicione outros conforme necessário
+}
+
+
+def get_flag_emoji(nationality_code: str | None) -> str:
+    """Retorna o emoji da bandeira para um código de nacionalidade."""
+    if nationality_code:
+        return COUNTRY_FLAGS.get(
+            nationality_code.upper(), ""
+        )  # Retorna "" se não achar o código
+    return ""
+
 
 async def detect_intent_text(
     project_id: str, session_id: str, text: str, language_code: str = "pt-br"
@@ -228,47 +249,61 @@ def get_today_utc_date_str() -> str:
     return today_utc.strftime("%Y-%m-%d")
 
 
-def format_match_data_geral(match_data: dict, fuso_horario_local: str = "America/Fortaleza") -> str:
+def format_match_data_geral(
+    match_data: dict, fuso_horario_local: str = "America/Fortaleza"
+) -> str:
     """Formata os dados de uma única partida (geral) para exibição - v2."""
     # Nome dos times (mais robusto se um faltar)
     opponents = match_data.get("opponents", [])
     team_names = [o.get("opponent", {}).get("name", "Time ?") for o in opponents]
-    match_title = f"{team_names[0]} vs {team_names[1]}" if len(team_names) == 2 else match_data.get("name", "Jogo Indefinido")
+    match_title = (
+        f"{team_names[0]} vs {team_names[1]}"
+        if len(team_names) == 2
+        else match_data.get("name", "Jogo Indefinido")
+    )
 
     torneio = match_data.get("league", {}).get("name", "")
     serie = match_data.get("serie", {}).get("full_name", "")
-    torneio_full = f"{torneio} ({serie})" if serie else torneio # Combina se tiver série
+    torneio_full = (
+        f"{torneio} ({serie})" if serie else torneio
+    )  # Combina se tiver série
 
     status = match_data.get("status", "desconhecido")
-    begin_at_str = match_data.get("begin_at") # Usar begin_at para agendados/correndo
+    begin_at_str = match_data.get("begin_at")  # Usar begin_at para agendados/correndo
     results = match_data.get("results", [])
 
     # Hora Local (Formato HH:MM)
     hora_formatada = "?"
     if begin_at_str:
         try:
-            dt_utc = datetime.datetime.fromisoformat(begin_at_str.replace("Z", "+00:00"))
+            dt_utc = datetime.datetime.fromisoformat(
+                begin_at_str.replace("Z", "+00:00")
+            )
             fuso_local_obj = pytz.timezone(fuso_horario_local)
             dt_local = dt_utc.astimezone(fuso_local_obj)
             hora_formatada = dt_local.strftime("%H:%M")
         except Exception:
-            hora_formatada = "?" # Falha silenciosa
+            hora_formatada = "?"  # Falha silenciosa
 
     # Status com Emoji
-    status_emoji = "⏳" if status == "not_started" else "🔴" if status == "running" else "✅" if status == "finished" else "❓"
-    status_texto = status.replace('_', ' ').capitalize()
+    status_emoji = (
+        "⏳"
+        if status == "not_started"
+        else "🔴" if status == "running" else "✅" if status == "finished" else "❓"
+    )
+    status_texto = status.replace("_", " ").capitalize()
 
     # Placar (se running/finished)
     placar_str = ""
     if (status == "running" or status == "finished") and len(results) == 2:
         score_a = results[0].get("score", "?")
         score_b = results[1].get("score", "?")
-        placar_str = f" <b>({score_a} x {score_b})</b>" # Placar em negrito
+        placar_str = f" <b>({score_a} x {score_b})</b>"  # Placar em negrito
 
     # Monta a string final por linha
     linha1 = f"🆚 <b>{match_title}</b>{placar_str}"
-    linha2 = f"   <code>{hora_formatada}</code> | {status_texto} {status_emoji}" # Hora com `code` para monoespaçado
-    linha3 = f"   🏆 <i>{torneio_full}</i>" # Torneio em itálico
+    linha2 = f"   <code>{hora_formatada}</code> | {status_texto} {status_emoji}"  # Hora com `code` para monoespaçado
+    linha3 = f"   🏆 <i>{torneio_full}</i>"  # Torneio em itálico
 
     return f"{linha1}\n{linha2}\n{linha3}"
 
@@ -390,7 +425,6 @@ async def buscar_jogos_proximos_hoje_api() -> list[dict]:
             f"Erro ao buscar/processar próximos jogos de hoje: {exc}", exc_info=True
         )
         return []
-
 
 
 async def buscar_proximo_jogo_furia_api() -> str:
@@ -726,6 +760,8 @@ async def obter_e_formatar_noticias(num_noticias: int = 5) -> str:
     mensagem_final += "\n\n".join(noticias_formatadas)  # Separa com linha dupla
 
     return mensagem_final.strip()
+
+
 async def obter_e_formatar_ultimo_jogo() -> str:
     """
     Busca o último jogo da FURIA na API, formata o resultado e retorna a string.
@@ -745,6 +781,8 @@ async def obter_e_formatar_ultimo_jogo() -> str:
     except Exception as e:
         logger.error(f"Erro em obter_e_formatar_ultimo_jogo: {e}", exc_info=True)
         return "❌ Desculpe, ocorreu um erro ao buscar informações do último jogo."
+
+
 async def obter_e_formatar_campeonatos() -> str:
     """
     Busca e formata a lista de campeonatos.
@@ -844,30 +882,34 @@ async def obter_e_formatar_campeonatos() -> str:
 
     except Exception as e:
         logger.error(f"Erro em obter_e_formatar_campeonatos: {e}", exc_info=True)
-        return "❌ Ocorreu um erro ao buscar os campeonatos."    
+        return "❌ Ocorreu um erro ao buscar os campeonatos."
+
+
 async def obter_e_formatar_jogos_hoje() -> str:
     """Busca jogos correndo e próximos de hoje (GERAL) e retorna a string formatada."""
     try:
         logger.info("obtendo_e_formatando_jogos_hoje_geral: Iniciando busca...")
         resultados = await asyncio.gather(
-            buscar_jogos_correndo_api(),      # Função que busca jogos gerais running
-            buscar_jogos_proximos_hoje_api() # Função que busca jogos gerais upcoming hoje
+            buscar_jogos_correndo_api(),  # Função que busca jogos gerais running
+            buscar_jogos_proximos_hoje_api(),  # Função que busca jogos gerais upcoming hoje
         )
         jogos_correndo = resultados[0]
         jogos_proximos = resultados[1]
 
         if not jogos_correndo and not jogos_proximos:
-            return "⚫ Não encontrei jogos de CS correndo ou agendados para hoje na API."
+            return (
+                "⚫ Não encontrei jogos de CS correndo ou agendados para hoje na API."
+            )
 
         # Monta a mensagem final
-        mensagem_partes = [] # Usaremos uma lista para montar as partes da mensagem
-        today_str = datetime.date.today().strftime('%d/%m/%Y')
+        mensagem_partes = []  # Usaremos uma lista para montar as partes da mensagem
+        today_str = datetime.date.today().strftime("%d/%m/%Y")
         mensagem_partes.append(f"📅 **Agenda de CS para Hoje ({today_str})** 📅")
 
-        max_jogos_mostrar_por_secao = 7 # Limite por seção (ajuste conforme necessário)
+        max_jogos_mostrar_por_secao = 7  # Limite por seção (ajuste conforme necessário)
 
         if jogos_correndo:
-            mensagem_partes.append("\n🔴 <b>Ao Vivo Agora:</b>") # Título da seção
+            mensagem_partes.append("\n🔴 <b>Ao Vivo Agora:</b>")  # Título da seção
             count = 0
             for jogo in jogos_correndo:
                 if count >= max_jogos_mostrar_por_secao:
@@ -879,11 +921,17 @@ async def obter_e_formatar_jogos_hoje() -> str:
 
         if jogos_proximos:
             # Remove duplicatas (jogos que já estão como 'running')
-            ids_correndo = {j.get('id') for j in jogos_correndo}
-            jogos_proximos_filtrados = [j for j in jogos_proximos if j.get('id') not in ids_correndo]
+            ids_correndo = {j.get("id") for j in jogos_correndo}
+            jogos_proximos_filtrados = [
+                j for j in jogos_proximos if j.get("id") not in ids_correndo
+            ]
 
-            if jogos_proximos_filtrados: # Só adiciona a seção se houver jogos próximos não repetidos
-                mensagem_partes.append("\n⏳ <b>Agendados para Hoje:</b>") # Título da seção
+            if (
+                jogos_proximos_filtrados
+            ):  # Só adiciona a seção se houver jogos próximos não repetidos
+                mensagem_partes.append(
+                    "\n⏳ <b>Agendados para Hoje:</b>"
+                )  # Título da seção
                 count = 0
                 for jogo in jogos_proximos_filtrados:
                     if count >= max_jogos_mostrar_por_secao:
@@ -899,6 +947,86 @@ async def obter_e_formatar_jogos_hoje() -> str:
     except Exception as e:
         logger.error(f"Erro ao obter e formatar jogos de hoje: {e}", exc_info=True)
         return "❌ Ocorreu um erro ao buscar a agenda geral de hoje."
+
+
+async def obter_e_formatar_lineup() -> tuple[str, InlineKeyboardMarkup | None]:
+    """
+    Orquestra a busca e formatação da line-up.
+    Retorna uma tupla: (texto_formatado, teclado_inline_ou_None).
+    """
+    dados_time = await buscar_dados_time_furia_api()
+    texto_formatado = formatar_lineup_texto(dados_time)
+
+    # Cria o botão inline para Liquipedia (verificar URL)
+    url_liquipedia_furia = (
+        "https://liquipedia.net/counterstrike/FURIA_Esports"  # Exemplo - VERIFICAR
+    )
+    teclado_inline = None
+    if dados_time:  # Só mostra o botão se conseguiu buscar os dados
+        try:
+            # Importações necessárias para o teclado inline
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            botao_liquipedia = InlineKeyboardButton(
+                text="Ver Detalhes (Liquipedia)", url=url_liquipedia_furia
+            )
+            # Cria o teclado com uma linha contendo o botão
+            keyboard = [[botao_liquipedia]]
+            teclado_inline = InlineKeyboardMarkup(keyboard)
+        except ImportError:
+            logger.error(
+                "Falha ao importar InlineKeyboardButton/InlineKeyboardMarkup. Botão não será adicionado."
+            )
+        except Exception as e:
+            logger.error(f"Erro ao criar botão inline para lineup: {e}")
+
+    return texto_formatado, teclado_inline
+
+
+def formatar_lineup_texto(dados_time: dict | None) -> str:
+    """Formata a line-up a partir dos dados do time, separando jogadores e coach."""
+    if not dados_time:
+        return "Não foi possível obter os dados da equipe."
+
+    jogadores_lista = dados_time.get("players", [])
+    if not jogadores_lista:
+        return "Não encontrei a lista de membros da equipe."
+
+    jogadores_ativos = []
+    comissao_tecnica = []
+    coach_name_lower = "guerri"  # Identificador do coach (ajustar se mudar)
+
+    for membro in jogadores_lista:
+        if membro.get("active") is True:
+            nome = membro.get("name", "Desconhecido")
+            nacionalidade = membro.get("nationality")
+            flag = get_flag_emoji(nacionalidade)  # Pega a bandeira
+            membro_formatado = f"• {nome} {flag}".strip()  # Monta a linha
+
+            # Separa o coach pelo nome (ajuste se necessário)
+            if nome.lower() == coach_name_lower:
+                comissao_tecnica.append(membro_formatado)
+            else:
+                jogadores_ativos.append(membro_formatado)
+
+    # Monta a mensagem final
+    mensagem = "🐾 <b>Line-up FURIA</b> 🐾\n"
+
+    if jogadores_ativos:
+        mensagem += "\n<b>Jogadores Ativos:</b>\n"
+        mensagem += "\n".join(jogadores_ativos)  # Usa quebra de linha normal
+    else:
+        mensagem += "\n<i>Nenhum jogador ativo encontrado.</i>"
+
+    if comissao_tecnica:
+        mensagem += "\n\n<b>Comissão Técnica:</b>\n"
+        mensagem += "\n".join(comissao_tecnica)
+
+    # Adiciona nota sobre a fonte dos dados ou possíveis imprecisões
+    mensagem += "\n\n<i>(Baseado nos dados ativos da API)</i>"
+
+    return mensagem.strip()
+
 
 def format_last_match_result(
     match_data: dict, fuso_horario_local: str = "America/Fortaleza"
@@ -982,8 +1110,9 @@ def format_last_match_result(
         f"🏆 {torneio}\n"
         f"🗓️ Finalizado em: {data_fim_formatada} (Horário de Fortaleza)"
     )
-async def buscar_lineup_furia_api() -> str:
 
+
+async def buscar_lineup_furia_api() -> str:
     """
     Busca os detalhes da equipe FURIA na API PandaScore para extrair a line-up ativa.
     Retorna uma string formatada com a line-up ou uma mensagem de erro.
@@ -1059,8 +1188,9 @@ async def buscar_lineup_furia_api() -> str:
             f"Erro inesperado ao processar detalhes da FURIA: {exc}", exc_info=True
         )
         return "😵 Ocorreu um erro inesperado ao processar a line-up."
-async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
 
+
+async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
     """
     TENTA buscar torneios 'running' e 'upcoming' de CS onde a FURIA participa,
     usando um filtro de servidor (filter[teams.id]).
@@ -1168,8 +1298,9 @@ async def buscar_torneios_furia_api(limit_each: int = 15) -> list[dict]:
     except Exception as exc:
         logger.error(f"Erro geral ao buscar torneios da Furia: {exc}", exc_info=True)
         return []
-async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
 
+
+async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
     """
     Busca torneios 'running' e 'upcoming' GERAIS de CS na API PandaScore.
     Retorna uma lista combinada de dicionários de torneios.
@@ -1251,6 +1382,50 @@ async def buscar_torneios_gerais_api(limit_each: int = 10) -> list[dict]:
         return []
 
 
+async def buscar_dados_time_furia_api() -> dict | None:
+    """
+    Busca os dados completos da equipe FURIA na API PandaScore.
+    Retorna o dicionário JSON completo ou None em caso de erro.
+    """
+    endpoint_detalhes_time = (
+        f"{PANDASCORE_BASE_URL}/teams/{FURIA_TEAM_ID}"  # Endpoint corrigido
+    )
+    headers = {
+        "Authorization": f"Bearer {PANDASCORE_API_KEY}",
+        "Accept": "application/json",
+    }
+    params = {}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            logger.info(
+                f"Chamando API para detalhes da FURIA: {endpoint_detalhes_time}"
+            )
+            response = await client.get(
+                endpoint_detalhes_time, headers=headers, params=params
+            )
+            response.raise_for_status()
+            dados_time = response.json()
+            if dados_time:
+                logger.info(
+                    f"Dados da equipe ID {FURIA_TEAM_ID} recebidos com sucesso."
+                )
+                return dados_time
+            else:
+                logger.warning(f"API retornou resposta vazia para ID {FURIA_TEAM_ID}.")
+                return None
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            f"Erro HTTP ao buscar detalhes da FURIA ({exc.response.status_code}): {exc.request.url} - Resposta: {exc.response.text}"
+        )
+        return None
+    except Exception as exc:
+        logger.error(
+            f"Erro inesperado ao buscar detalhes da FURIA: {exc}", exc_info=True
+        )
+        return None
+
+
 def get_furia_stats_for_year(year_to_check: int) -> str:
     """Busca stats (estáticos) e formata a resposta para um ano."""
     logger.info(f"Buscando stats no DB estático para o ano {year_to_check}")
@@ -1318,8 +1493,9 @@ Você também pode me perguntar naturalmente sobre:
 Estou sempre aprendendo! #DIADEFURIA 🔥
     """
     return help_text
-def get_social_links_text() -> str:
 
+
+def get_social_links_text() -> str:
     """Monta e retorna a string HTML formatada com os links sociais da FURIA."""
 
     # --- IMPORTANTE: Verifique e coloque os links corretos aqui! ---
@@ -1346,6 +1522,7 @@ def get_social_links_text() -> str:
 Siga a Pantera! 🐾
     """
     return social_text
+
 
 # --- Fim das Funções Auxiliares ---
 
@@ -1436,13 +1613,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )  # Ou uma função refatorada
         await update.message.reply_html(resultado_proximo_jogo)
 
-    elif intent_name == "LineUp":  # intenção que já tínhamos
+    elif intent_name == "LineUp":  # <<< Use o nome exato da sua intenção
         logger.info("handle_message: Intenção 'LineUp' reconhecida.")
-        await update.message.reply_text(
-            "Entendi! vou da uma conferida para você! Buscando..."
-        )
-        resultado_lineup = await buscar_lineup_furia_api()  # Ou uma função refatorada
-        await update.message.reply_html(resultado_lineup)
+        await update.message.reply_text("Verificando a line-up...")
+        # Chama a função orquestradora que retorna texto E teclado
+        texto_resposta, teclado_resposta = await obter_e_formatar_lineup()
+        # Envia a resposta com o teclado
+        await update.message.reply_html(texto_resposta, reply_markup=teclado_resposta)
 
     elif intent_name == "FuriaTourments":  # Use o nome exato da sua intenção
         logger.info("handle_message: Intenção 'FuriaTourments' reconhecida.")
@@ -1478,13 +1655,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         resultado = await obter_e_formatar_noticias(num_noticias=5)
         await update.message.reply_html(resultado, disable_web_page_preview=True)
 
-    elif intent_name == "GetSocialLinks": # <<< Use o nome exato da sua intenção Dialogflow
+    elif (
+        intent_name == "GetSocialLinks"
+    ):  # <<< Use o nome exato da sua intenção Dialogflow
         logger.info("handle_message: Intenção 'GetSocialLinks' reconhecida.")
         # Chama a função que gera o texto dos links
         resposta_texto = get_social_links_text()
         # Usa o 'update' disponível aqui para enviar a resposta
         await update.message.reply_html(resposta_texto, disable_web_page_preview=True)
-
 
     # <<< NOVO Bloco para Stats por Ano >>>
     elif intent_name == "GetTeamStatsByYear":  # Use o nome exato da sua intenção
@@ -1576,15 +1754,12 @@ async def proximo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def line_up(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Envia uma mensagem com a line up atual buscada da API."""
-    await update.message.reply_text("Buscando a line-up atual da FURIA...")  # Feedback
-
-    resultado_lineup = await buscar_lineup_furia_api()  # Chama a nova função
-
-    # Envia o resultado formatado (ou a mensagem de erro)
-    await update.message.reply_html(
-        resultado_lineup
-    )  # Usar reply_html se tiver formatação HTML
+    """Handler para o comando /line_up."""
+    await update.message.reply_text("Buscando a line-up atual...")
+    # Chama a função orquestradora que retorna texto E teclado
+    texto_resposta, teclado_resposta = await obter_e_formatar_lineup()
+    # Envia a resposta com o teclado (reply_markup)
+    await update.message.reply_html(texto_resposta, reply_markup=teclado_resposta)
 
 
 async def jogos_hoje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

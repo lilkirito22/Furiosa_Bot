@@ -1495,6 +1495,32 @@ Estou sempre aprendendo! #DIADEFURIA 🔥
     return help_text
 
 
+# Coloque junto com suas outras funções auxiliares/geradoras de texto
+
+
+def get_furia_info_text() -> str:
+    """Monta e retorna a string HTML formatada com informações sobre a FURIA."""
+
+    # --- Verifique/Ajuste este texto e o link ---
+    furia_website = "https://furia.gg/"  # Exemplo - Confirmar URL oficial
+
+    info_text = f"""
+🐾 <b>Sobre a FURIA Esports</b> 🐾
+
+A FURIA é uma organização brasileira de e-sports fundada em 2017, conhecida por sua ascensão meteórica, especialmente no cenário de Counter-Strike (CS).
+
+Com uma identidade visual marcante (a pantera!) e uma base de fãs extremamente apaixonada, a FURIA representa o Brasil em diversas modalidades nos maiores palcos do mundo, sempre com muita garra e um estilo de jogo agressivo.
+
+Além do CS, a organização também compete ou competiu em outros jogos como League of Legends (LoL), Valorant, Rainbow Six Siege, entre outros.
+
+Quer saber mais? Visite o site oficial!
+<a href="{furia_website}">Site Oficial da FURIA</a>
+
+#DIADEFURIA 🔥
+    """
+    return info_text
+
+
 def get_social_links_text() -> str:
     """Monta e retorna a string HTML formatada com os links sociais da FURIA."""
 
@@ -1620,6 +1646,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         texto_resposta, teclado_resposta = await obter_e_formatar_lineup()
         # Envia a resposta com o teclado
         await update.message.reply_html(texto_resposta, reply_markup=teclado_resposta)
+
+    elif (
+        intent_name == "GetFuriaInfo"
+    ):  # <<< Use o nome exato da sua intenção Dialogflow
+        logger.info("handle_message: Intenção 'GetFuriaInfo' reconhecida.")
+        # Chama a função que gera o texto sobre a Furia
+        resposta_texto = get_furia_info_text()
+        # Usa o 'update' disponível aqui para enviar a resposta
+        await update.message.reply_html(resposta_texto, disable_web_page_preview=True)
 
     elif intent_name == "FuriaTourments":  # Use o nome exato da sua intenção
         logger.info("handle_message: Intenção 'FuriaTourments' reconhecida.")
@@ -1854,6 +1889,19 @@ async def social_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_html(resposta_texto, disable_web_page_preview=True)
 
 
+# Imports necessários: Update, ContextTypes
+
+
+async def sobre_furia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para o comando /sobre ou /furia."""
+    # Obtém o texto da função auxiliar
+    resposta_texto = get_furia_info_text()
+    # Envia o texto formatado
+    await update.message.reply_html(
+        resposta_texto, disable_web_page_preview=True
+    )  # Desativa preview do site
+
+
 async def ultimo_jogo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para o comando /ultimojogo."""
     await update.message.reply_text("Buscando resultado do último jogo da FURIA...")
@@ -1928,6 +1976,8 @@ def main() -> None:
     )  # Alias para /social
     # Registra o handler de erro
     application.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("sobre", sobre_furia))
+    application.add_handler(CommandHandler("furia", sobre_furia))  # Alias
 
     # Inicia o Bot (fica escutando por comandos)
     print("Bot iniciado...")

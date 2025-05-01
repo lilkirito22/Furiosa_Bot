@@ -34,7 +34,7 @@ O bot consegue:
 
 **Pré-requisitos:**
 
-- Python 3.11.4+ (ou a versão que você usou)
+- Python 3.11.4+ 
 - `pipenv` instalado globalmente (`pip install pipenv`)
 
 **Passos:**
